@@ -148,9 +148,14 @@ export function mount({
     scene.camera.zoomBy(e.deltaY);
   }, { passive: false });
 
-  // Draw one frame immediately so the page never shows an empty canvas.
+  // Open on a composed frame instead of fading up from the background: the
+  // first still frame is what a thumbnail, a shared link and a reader who
+  // never scrolls all get. Transitions after this one still cross-fade.
+  director.veil = 0;
+  director.phase = 'hold';
   scene.camera.update(0);
-  scene.render({ veil: director.veil });
+  scene.render({ veil: 0 });
+  onVeil(0);
 
   return {
     play() { wanted = true; sync(); },
