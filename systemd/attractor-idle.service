@@ -1,0 +1,16 @@
+[Unit]
+Description=Idle watcher for the strange attractor screensaver
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+Environment=ATTRACTOR_IDLE_SECONDS=300
+ExecStart=/usr/bin/swayidle -w \
+  timeout ${ATTRACTOR_IDLE_SECONDS} 'systemctl --user start attractor-screensaver.service' \
+  resume 'systemctl --user stop attractor-screensaver.service'
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

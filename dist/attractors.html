@@ -1,0 +1,2343 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Strange Attractors</title>
+<style>
+  :root {
+    --bg: #07090e;
+    --fg: #e8edf5;
+    --accent: #8de2a7;
+    --hud: 0;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%; width: 100%;
+    background: var(--bg);
+    color: var(--fg);
+    overflow: hidden;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    transition: background-color 400ms linear;
+  }
+  body.idle { cursor: none; }
+  canvas {
+    display: block;
+    width: 100%; height: 100%;
+    touch-action: none;
+  }
+
+  #hud {
+    position: fixed;
+    left: max(24px, env(safe-area-inset-left));
+    bottom: max(22px, env(safe-area-inset-bottom));
+    max-width: min(52ch, calc(100vw - 48px));
+    max-height: 38vh;
+    opacity: var(--hud);
+    transition: opacity 240ms linear;
+    pointer-events: none;
+    text-shadow: 0 1px 12px rgba(0,0,0,.45);
+    line-height: 1.45;
+  }
+  body.paper #hud { text-shadow: 0 1px 10px rgba(255,255,255,.7); }
+  #hud.hidden { opacity: 0 !important; }
+
+  #name {
+    font-size: 1.45rem;
+    font-weight: 600;
+    letter-spacing: -0.012em;
+    margin: 0 0 .45rem;
+  }
+  #eq {
+    font-family: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+    font-size: .8rem;
+    white-space: pre-wrap;
+    opacity: .92;
+    margin: 0 0 .45rem;
+  }
+  #params {
+    font-family: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+    font-size: .74rem;
+    opacity: .7;
+    margin: 0 0 .5rem;
+  }
+  #ref {
+    font-size: .72rem;
+    opacity: .55;
+    font-style: italic;
+    margin: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  #meta {
+    position: fixed;
+    right: max(24px, env(safe-area-inset-right));
+    bottom: max(22px, env(safe-area-inset-bottom));
+    text-align: right;
+    font-size: .68rem;
+    letter-spacing: .09em;
+    text-transform: uppercase;
+    opacity: calc(var(--hud) * .6);
+    transition: opacity 240ms linear;
+    pointer-events: none;
+  }
+  #meta.hidden { opacity: 0 !important; }
+  #meta b { color: var(--accent); font-weight: 600; }
+
+  #help {
+    position: fixed;
+    top: max(22px, env(safe-area-inset-top));
+    right: max(24px, env(safe-area-inset-right));
+    font-size: .68rem;
+    line-height: 1.7;
+    text-align: right;
+    opacity: 0;
+    transition: opacity 240ms linear;
+    pointer-events: none;
+  }
+  #help.show { opacity: .5; }
+  #help kbd {
+    font-family: ui-monospace, Menlo, monospace;
+    border: 1px solid currentColor;
+    border-radius: 3px;
+    padding: 0 .28em;
+    opacity: .85;
+  }
+
+  #error {
+    position: fixed; inset: 0;
+    display: none;
+    place-content: center;
+    padding: 12vw;
+    background: #0b0d12;
+    color: #ffb4a8;
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: .85rem;
+    white-space: pre-wrap;
+    overflow: auto;
+  }
+  #error.show { display: grid; }
+</style>
+</head>
+<body>
+  <canvas id="gl"></canvas>
+
+  <div id="hud">
+    <h1 id="name"></h1>
+    <pre id="eq"></pre>
+    <div id="params"></div>
+    <div id="ref"></div>
+  </div>
+
+  <div id="meta"><span id="counter"></span> · <b id="palette"></b></div>
+
+  <div id="help">
+    <div><kbd>←</kbd> <kbd>→</kbd> previous / next attractor</div>
+    <div><kbd>R</kbd> new colours &amp; camera</div>
+    <div><kbd>space</kbd> hold this one</div>
+    <div><kbd>H</kbd> hide overlay · <kbd>F</kbd> fullscreen</div>
+    <div><kbd>drag</kbd> orbit · <kbd>scroll</kbd> zoom</div>
+  </div>
+
+  <div id="error"></div>
+
+  <script type="module">
+(function () {
+
+const __mods = {};
+const __cache = {};
+function __def (name, fn) { __mods[name] = fn; }
+function __req (name) {
+  if (!__cache[name]) {
+    const exports = __cache[name] = {};
+    __mods[name](exports, __req);
+  }
+  return __cache[name];
+}
+
+__def("main.js", function (__exports, __req) {
+// Entry point: wiring, the frame loop, quality adaptation and input.
+
+const { createContext } = __req('glutil.js');
+const { Scene } = __req('scene.js');
+const { Director } = __req('director.js');
+const { ATTRACTORS } = __req('attractors.js');
+const { equations, parameterLine, reference } = __req('format.js');
+
+const params = new URLSearchParams(location.search);
+const num = (key, fallback) => {
+  const v = parseFloat(params.get(key));
+  return Number.isFinite(v) ? v : fallback;
+};
+const flag = key => params.has(key) && params.get(key) !== '0' && params.get(key) !== 'false';
+
+const OPTS = {
+  idle: flag('idle'),
+  duration: num('duration', 45),
+  fadeTime: num('fade', 1.4),
+  particles: Math.max(64, Math.min(4096, num('particles', 1024))),
+  steps: Math.max(8, Math.min(512, num('steps', 180))),
+  speed: num('speed', 1),
+  theme: params.get('theme') || 'any',
+  attractor: params.get('attractor'),
+  maxPixelRatio: num('dpr', 1.75),
+  hud: params.get('hud') !== '0'
+};
+
+const el = id => document.getElementById(id);
+
+async function boot() {
+  const canvas = el('gl');
+  const gl = createContext(canvas, { antialias: true });
+
+  // Quality ladder, walked only between shots so changes are never visible.
+  const LADDER = [
+    { particles: 256, steps: 90 },
+    { particles: 512, steps: 120 },
+    { particles: 768, steps: 150 },
+    { particles: OPTS.particles, steps: OPTS.steps },
+    { particles: Math.min(2048, OPTS.particles * 2), steps: Math.min(320, OPTS.steps * 1.5 | 0) }
+  ];
+  let rung = 3;
+  let pendingRung = 3;
+  let ceilingRung = LADDER.length - 1;
+
+  const scene = new Scene(gl, LADDER[rung]);
+
+  const director = new Director(scene, {
+    duration: OPTS.duration,
+    fadeTime: OPTS.fadeTime,
+    theme: OPTS.theme,
+    pinned: OPTS.attractor,
+    quality: () => { rung = pendingRung; return LADDER[rung]; },
+    onChange: describe
+  });
+
+  function describe(attractor, style, dir) {
+    document.documentElement.style.setProperty('--bg', style.palette.css.background);
+    document.documentElement.style.setProperty('--fg', style.palette.css.foreground);
+    document.documentElement.style.setProperty('--accent', style.palette.css.accent);
+    document.body.classList.toggle('paper', !style.palette.dark);
+    el('name').textContent = attractor.name;
+    el('eq').textContent = equations(attractor).join('\n');
+    el('params').textContent = parameterLine(attractor);
+    el('ref').textContent = reference(attractor);
+    el('counter').textContent =
+      `${String(dir.index + 1).padStart(2, '0')} / ${ATTRACTORS.length}`;
+    el('palette').textContent = style.palette.name;
+  }
+
+  // --- sizing --------------------------------------------------------------
+  let pixelRatio = 1;
+  function resize() {
+    pixelRatio = Math.min(window.devicePixelRatio || 1, OPTS.maxPixelRatio);
+    const w = Math.max(1, Math.round(canvas.clientWidth * pixelRatio));
+    const h = Math.max(1, Math.round(canvas.clientHeight * pixelRatio));
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
+    }
+    scene.camera.aspect = w / h;
+    if (scene.style) scene.style.pixelRatio = pixelRatio;
+  }
+  resize();
+  new ResizeObserver(resize).observe(canvas);
+  window.addEventListener('resize', resize);
+
+  // --- frame loop ----------------------------------------------------------
+  let last = performance.now();
+  let accumulator = 0;
+  let smoothDt = 1 / 60;
+  let sinceCheck = 0;
+  let running = true;
+
+  function frame(now) {
+    if (!running) return;
+    requestAnimationFrame(frame);
+
+    const dt = Math.min(0.1, (now - last) / 1000);
+    last = now;
+
+    if (scene.style) scene.style.pixelRatio = pixelRatio;
+
+    // Integration is pinned to 60 steps/second so the motion looks the same
+    // on a 60Hz panel and a 165Hz one.
+    if (!director.paused) {
+      accumulator += dt * 60 * OPTS.speed;
+      let steps = Math.min(4, Math.floor(accumulator));
+      accumulator -= steps;
+      while (steps-- > 0) scene.sim.step(1);
+    } else {
+      accumulator = 0;
+    }
+
+    scene.camera.update(dt);
+    const veil = director.advance(dt);
+    scene.render({ veil });
+
+    const hud = OPTS.hud ? Math.max(0, 1 - veil * 1.6) : 0;
+    document.documentElement.style.setProperty('--hud', hud.toFixed(3));
+
+    // Frame-to-frame interval is the only honest signal here: CPU timings say
+    // nothing about a GPU-bound draw. Anything past ~46fps costs a rung, and a
+    // rung we have already fallen off is never climbed back to.
+    if (dt < 0.05) smoothDt += (dt - smoothDt) * 0.05;
+    sinceCheck += dt;
+    if (sinceCheck > 4) {
+      sinceCheck = 0;
+      if (smoothDt > 0.0215 && pendingRung > 0) {
+        pendingRung--;
+        ceilingRung = pendingRung;
+      } else if (smoothDt < 0.0125 && pendingRung < ceilingRung) {
+        pendingRung++;
+      }
+    }
+  }
+  requestAnimationFrame(frame);
+
+  canvas.addEventListener('webglcontextlost', e => {
+    e.preventDefault();
+    running = false;
+    el('error').textContent = 'WebGL context lost. Reload to restart.';
+    el('error').classList.add('show');
+  });
+
+  // --- input ---------------------------------------------------------------
+  if (OPTS.idle) {
+    document.body.classList.add('idle');
+    armIdleExit();
+  } else {
+    armControls(canvas, director, scene);
+  }
+
+  return { scene, director };
+}
+
+// Screensaver mode: the first real sign of life dismisses the window.
+function armIdleExit() {
+  const armedAt = performance.now();
+  let origin = null;
+  let quitting = false;
+  const quit = () => {
+    if (quitting || performance.now() - armedAt < 700) return;
+    quitting = true;
+    // The launcher's static server shuts down on /__quit and takes the browser
+    // with it; window.close() covers the case where the page is run standalone.
+    fetch('/__quit').catch(() => {});
+    window.close();
+    document.body.classList.remove('idle');
+  };
+  const moved = e => {
+    if (!origin) { origin = [e.clientX, e.clientY]; return; }
+    if (Math.hypot(e.clientX - origin[0], e.clientY - origin[1]) > 12) quit();
+  };
+  window.addEventListener('mousemove', moved, { passive: true });
+  for (const type of ['keydown', 'mousedown', 'wheel', 'touchstart', 'pointerdown']) {
+    window.addEventListener(type, quit, { passive: true });
+  }
+}
+
+function armControls(canvas, director, scene) {
+  const help = el('help');
+  let helpTimer = null;
+  const flashHelp = () => {
+    help.classList.add('show');
+    clearTimeout(helpTimer);
+    helpTimer = setTimeout(() => help.classList.remove('show'), 3200);
+  };
+  flashHelp();
+
+  window.addEventListener('keydown', e => {
+    switch (e.key) {
+      case 'ArrowRight': case 'n': director.jump(1); break;
+      case 'ArrowLeft': case 'p': director.jump(-1); break;
+      case 'r': case 'R': director.reshuffleLook(); break;
+      case ' ': director.paused = !director.paused; e.preventDefault(); break;
+      case 'h': case 'H':
+        el('hud').classList.toggle('hidden');
+        el('meta').classList.toggle('hidden');
+        break;
+      case 'f': case 'F':
+        if (document.fullscreenElement) document.exitFullscreen();
+        else document.documentElement.requestFullscreen().catch(() => {});
+        break;
+      case '?': flashHelp(); break;
+      default: return;
+    }
+  });
+
+  let dragging = null;
+  canvas.addEventListener('pointerdown', e => {
+    dragging = [e.clientX, e.clientY];
+    scene.camera.drag = true;
+    canvas.setPointerCapture(e.pointerId);
+  });
+  canvas.addEventListener('pointermove', e => {
+    if (!dragging) return;
+    scene.camera.orbitBy(e.clientX - dragging[0], e.clientY - dragging[1]);
+    dragging = [e.clientX, e.clientY];
+  });
+  const release = e => {
+    dragging = null;
+    scene.camera.drag = false;
+    if (e.pointerId !== undefined && canvas.hasPointerCapture(e.pointerId)) {
+      canvas.releasePointerCapture(e.pointerId);
+    }
+  };
+  canvas.addEventListener('pointerup', release);
+  canvas.addEventListener('pointercancel', release);
+  canvas.addEventListener('wheel', e => {
+    e.preventDefault();
+    scene.camera.zoomBy(e.deltaY);
+  }, { passive: false });
+}
+
+Object.assign(__exports, { boot });
+
+});
+
+__def("glutil.js", function (__exports, __req) {
+// Thin WebGL2 helpers: programs with cached uniform locations, float FBOs.
+
+function createContext(canvas, { antialias = true } = {}) {
+  const gl = canvas.getContext('webgl2', {
+    antialias,
+    alpha: false,
+    depth: true,
+    stencil: false,
+    premultipliedAlpha: false,
+    preserveDrawingBuffer: false,
+    powerPreference: 'high-performance',
+    desynchronized: true
+  });
+  if (!gl) throw new Error('WebGL2 is not available in this browser.');
+  if (!gl.getExtension('EXT_color_buffer_float')) {
+    throw new Error('EXT_color_buffer_float is required (float render targets).');
+  }
+  return gl;
+}
+
+function compile(gl, type, source) {
+  const sh = gl.createShader(type);
+  gl.shaderSource(sh, source);
+  gl.compileShader(sh);
+  if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+    const log = gl.getShaderInfoLog(sh);
+    const numbered = source.split('\n').map((l, i) => `${String(i + 1).padStart(3)}| ${l}`).join('\n');
+    gl.deleteShader(sh);
+    throw new Error(`Shader compile failed:\n${log}\n${numbered}`);
+  }
+  return sh;
+}
+
+function program(gl, vert, frag) {
+  const p = gl.createProgram();
+  const vs = compile(gl, gl.VERTEX_SHADER, vert);
+  const fs = compile(gl, gl.FRAGMENT_SHADER, frag);
+  gl.attachShader(p, vs);
+  gl.attachShader(p, fs);
+  gl.linkProgram(p);
+  gl.deleteShader(vs);
+  gl.deleteShader(fs);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+    const log = gl.getProgramInfoLog(p);
+    gl.deleteProgram(p);
+    throw new Error(`Program link failed:\n${log}`);
+  }
+  const u = {};
+  const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+  for (let i = 0; i < n; i++) {
+    const name = gl.getActiveUniform(p, i).name.replace(/\[0\]$/, '');
+    u[name] = gl.getUniformLocation(p, name);
+  }
+  return { program: p, u, destroy: () => gl.deleteProgram(p) };
+}
+
+// RGBA32F render target. NEAREST filtering; we only ever texelFetch it.
+function floatTarget(gl, width, height) {
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA32F, width, height);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+  const fbo = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  if (status !== gl.FRAMEBUFFER_COMPLETE) throw new Error(`Incomplete framebuffer: 0x${status.toString(16)}`);
+
+  return {
+    tex, fbo, width, height,
+    destroy() { gl.deleteTexture(tex); gl.deleteFramebuffer(fbo); }
+  };
+}
+
+// A single oversized triangle covering the viewport, for fullscreen passes.
+function fullscreenTriangle(gl) {
+  const vao = gl.createVertexArray();
+  const buf = gl.createBuffer();
+  gl.bindVertexArray(vao);
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-4, -4, 0, 4, 4, -4]), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+  gl.bindVertexArray(null);
+  return { vao, destroy() { gl.deleteVertexArray(vao); gl.deleteBuffer(buf); } };
+}
+
+const FULLSCREEN_VERT = `#version 300 es
+precision highp float;
+layout(location = 0) in vec2 xy;
+out vec2 uv;
+void main () {
+  uv = 0.5 * xy + 0.5;
+  gl_Position = vec4(xy, 0, 1);
+}`;
+
+function hexToRgb(hex) {
+  const h = hex.replace('#', '');
+  const v = h.length === 3 ? h.split('').map(c => c + c).join('') : h;
+  return [
+    parseInt(v.slice(0, 2), 16) / 255,
+    parseInt(v.slice(2, 4), 16) / 255,
+    parseInt(v.slice(4, 6), 16) / 255
+  ];
+}
+
+Object.assign(__exports, { createContext, program, floatTarget, fullscreenTriangle, FULLSCREEN_VERT, hexToRgb });
+
+});
+
+__def("scene.js", function (__exports, __req) {
+// Frame composition: floor smear, trails, grid room, transition veil.
+
+const { program, fullscreenTriangle, FULLSCREEN_VERT } = __req('glutil.js');
+const { Simulation } = __req('simulation.js');
+const { TrailRenderer } = __req('lines.js');
+const { Stage } = __req('stage.js');
+const { Camera } = __req('camera.js');
+
+const VEIL_FRAG = `#version 300 es
+precision highp float;
+uniform vec4 uColor;
+out vec4 fragColor;
+void main () { fragColor = uColor; }`;
+
+class Scene {
+  constructor(gl, opts) {
+    this.gl = gl;
+    this.sim = new Simulation(gl, opts);
+    this.trails = new TrailRenderer(gl);
+    this.stage = new Stage(gl);
+    this.camera = new Camera();
+    this.quad = fullscreenTriangle(gl);
+    this.veil = program(gl, FULLSCREEN_VERT, VEIL_FRAG);
+    this.style = null;
+  }
+
+  render({ veil = 0 } = {}) {
+    const gl = this.gl;
+    const style = this.style;
+    if (!style) return;
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+    gl.clearColor(style.background[0], style.background[1], style.background[2], 1);
+    gl.clearDepth(1);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+    gl.disable(gl.BLEND);
+    gl.enable(gl.SAMPLE_ALPHA_TO_COVERAGE);
+
+    if (style.shadow && this.camera.eye[1] > style.floorY) {
+      gl.disable(gl.DEPTH_TEST);
+      gl.depthMask(false);
+      this.trails.draw(this.sim, this.camera, style, { shadow: true });
+      gl.depthMask(true);
+    }
+
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthFunc(gl.LEQUAL);
+    this.trails.draw(this.sim, this.camera, style, { shadow: false });
+
+    gl.disable(gl.SAMPLE_ALPHA_TO_COVERAGE);
+
+    if (style.gridOpacity > 0.002) this.stage.draw(this.camera, style);
+
+    if (veil > 0.001) {
+      gl.disable(gl.DEPTH_TEST);
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      gl.useProgram(this.veil.program);
+      gl.uniform4f(this.veil.u.uColor, style.background[0], style.background[1], style.background[2], veil);
+      gl.bindVertexArray(this.quad.vao);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      gl.bindVertexArray(null);
+      gl.disable(gl.BLEND);
+    }
+  }
+
+  destroy() {
+    this.sim.destroy();
+    this.trails.destroy();
+    this.stage.destroy();
+    this.quad.destroy();
+    this.veil.destroy();
+  }
+}
+
+Object.assign(__exports, { Scene });
+
+});
+
+__def("simulation.js", function (__exports, __req) {
+// GPU state: one RGBA32F texture holding `steps` positions for each of
+// `particles` trajectories, advanced with 4th-order Runge-Kutta.
+//
+// Layout: texel (column, row) = position of particle `row` at trail slot
+// `column`. Columns are a ring buffer; `head` is the newest sample.
+
+const { program, floatTarget, fullscreenTriangle, FULLSCREEN_VERT } = __req('glutil.js');
+
+const QUASIRANDOM = `
+// http://extremelearning.com.au/unreasonable-effectiveness-of-quasirandom-sequences/
+vec3 quasirandom (float n) {
+  const float g = 1.22074408460575947536;
+  return fract(0.5 + n * vec3(1.0 / g, 1.0 / (g * g), 1.0 / (g * g * g))).zyx;
+}
+vec3 sphericalRandom (float n) {
+  vec3 r = quasirandom(n);
+  float u = r.x * 2.0 - 1.0;
+  float theta = 6.283185307179586 * r.y;
+  return vec3(sqrt(1.0 - u * u) * vec2(cos(theta), sin(theta)), u) * sqrt(r.z);
+}`;
+
+const INIT_FRAG = `#version 300 es
+precision highp float;
+uniform vec2 uResolution;
+uniform vec3 uOrigin;
+uniform float uScale;
+out vec4 fragColor;
+${QUASIRANDOM}
+void main () {
+  // gl_FragCoord carries a half-texel offset, which is welcome here: exactly
+  // zero states tend to stick to unstable axes and fly off to infinity.
+  float particle = gl_FragCoord.y;
+  fragColor = vec4(uOrigin + uScale * sphericalRandom(particle), 1.0);
+  // A sliver of variation along each trail so there is something to see on
+  // the very first frame.
+  fragColor.z -= gl_FragCoord.x / uResolution.x * 0.001;
+}`;
+
+const COPY_FRAG = `#version 300 es
+precision highp float;
+uniform sampler2D uSrc;
+out vec4 fragColor;
+void main () {
+  fragColor = texelFetch(uSrc, ivec2(0, int(gl_FragCoord.y)), 0);
+}`;
+
+function integrateFrag(attractor) {
+  const params = attractor.params || {};
+  const names = Object.keys(params);
+  const decls = names.length ? names.map(n => `uniform float ${n};`).join('\n') : '';
+  const deriv = attractor.deriv.trim().split('\n').map(l => '    ' + l.trim()).join('\n');
+  return `#version 300 es
+precision highp float;
+uniform sampler2D uSrc;
+uniform float uDt, uT;
+uniform int uColumn, uSubsteps;
+uniform vec3 uOrigin;
+out vec4 fragColor;
+${decls}
+${QUASIRANDOM}
+
+vec3 derivative (float x, float y, float z, float t) {
+  return vec3(
+${deriv}
+  );
+}
+
+vec3 D (vec3 p, float t) { return derivative(p.x, p.y, p.z, t); }
+
+void main () {
+  int row = int(gl_FragCoord.y);
+  vec3 p = texelFetch(uSrc, ivec2(uColumn, row), 0).xyz;
+  float t = uT;
+  float dt = uDt;
+
+  for (int i = 0; i < uSubsteps; i++) {
+    vec3 k1 = D(p, t);
+    vec3 k2 = D(p + (0.5 * dt) * k1, t + 0.5 * dt);
+    vec3 k3 = D(p + (0.5 * dt) * k2, t + 0.5 * dt);
+    vec3 k4 = D(p + dt * k3, t + dt);
+    p += (dt / 6.0) * (k1 + k4 + 2.0 * (k2 + k3));
+    t += dt;
+
+    // Trajectories that escape get pulled back toward the origin along the
+    // same ray; ones that go non-finite are re-seeded from scratch.
+    float m = dot(p, p);
+    if (!(m < 1e12)) p = uOrigin + sphericalRandom(float(row) + 0.5 + t);
+    else if (m > 1e6) p *= 0.0001;
+  }
+  fragColor = vec4(p, 1.0);
+}`;
+}
+
+class Simulation {
+  constructor(gl, { particles, steps }) {
+    this.gl = gl;
+    this.particles = particles;
+    this.steps = steps;
+    this.head = 0;
+    this.t = 0;
+    this.filled = 0;
+
+    this.state = floatTarget(gl, steps, particles);
+    this.tmp = floatTarget(gl, 1, particles);
+    this.quad = fullscreenTriangle(gl);
+    this.init = program(gl, FULLSCREEN_VERT, INIT_FRAG);
+    this.copy = program(gl, FULLSCREEN_VERT, COPY_FRAG);
+    this.programs = new Map(); // attractor name -> compiled integrator
+    this.attractor = null;
+    this.params = {};
+  }
+
+  integrator(attractor) {
+    let p = this.programs.get(attractor.name);
+    if (!p) {
+      p = program(this.gl, FULLSCREEN_VERT, integrateFrag(attractor));
+      this.programs.set(attractor.name, p);
+    }
+    return p;
+  }
+
+  // Seed every trail slot with a quasirandom blob and reset the clock.
+  reset(attractor) {
+    const gl = this.gl;
+    this.attractor = attractor;
+    this.params = { ...(attractor.params || {}) };
+    this.head = 0;
+    this.t = 0;
+    this.filled = 1;
+
+    const origin = attractor.initOrigin || [0, 0, 0];
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.state.fbo);
+    gl.viewport(0, 0, this.state.width, this.state.height);
+    gl.disable(gl.DEPTH_TEST);
+    gl.disable(gl.BLEND);
+    gl.useProgram(this.init.program);
+    gl.uniform2f(this.init.u.uResolution, this.state.width, this.state.height);
+    gl.uniform3fv(this.init.u.uOrigin, origin);
+    gl.uniform1f(this.init.u.uScale, attractor.initScale ?? 1);
+    gl.bindVertexArray(this.quad.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.bindVertexArray(null);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  }
+
+  // One RK4 advance of `substeps` internal steps, appended to the ring buffer.
+  step(substeps = 1) {
+    const gl = this.gl;
+    const a = this.attractor;
+    if (!a) return;
+    const prog = this.integrator(a);
+
+    // Integrate the head column into the scratch target.
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.tmp.fbo);
+    gl.viewport(0, 0, 1, this.particles);
+    gl.disable(gl.DEPTH_TEST);
+    gl.disable(gl.BLEND);
+    gl.useProgram(prog.program);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.state.tex);
+    gl.uniform1i(prog.u.uSrc, 0);
+    gl.uniform1f(prog.u.uDt, a.dt);
+    gl.uniform1f(prog.u.uT, this.t);
+    gl.uniform1i(prog.u.uColumn, this.head);
+    gl.uniform1i(prog.u.uSubsteps, substeps);
+    gl.uniform3fv(prog.u.uOrigin, a.initOrigin || [0, 0, 0]);
+    for (const [name, value] of Object.entries(this.params)) {
+      if (prog.u[name]) gl.uniform1f(prog.u[name], value);
+    }
+    gl.bindVertexArray(this.quad.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    this.t += a.dt * substeps;
+    this.head = (this.head + 1) % this.steps;
+    this.filled = Math.min(this.filled + 1, this.steps);
+
+    // Blit the scratch column back into the ring buffer.
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.state.fbo);
+    gl.viewport(this.head, 0, 1, this.particles);
+    gl.useProgram(this.copy.program);
+    gl.bindTexture(gl.TEXTURE_2D, this.tmp.tex);
+    gl.uniform1i(this.copy.u.uSrc, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.bindVertexArray(null);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  }
+
+  // Run the system far enough that the transient has died and the trail is
+  // full of on-attractor samples. Chunked so no single draw runs long.
+  spinUp(burnIn = 600, chunk = 24) {
+    const passes = Math.ceil(burnIn / chunk);
+    for (let i = 0; i < passes; i++) this.step(chunk);
+    for (let i = 0; i < this.steps; i++) this.step(1);
+  }
+
+  // Pull the trail buffer back to the CPU so the camera can frame the shape
+  // it actually settled into, rather than the notebook's hand-tuned guess.
+  readPositions() {
+    const gl = this.gl;
+    const out = new Float32Array(this.steps * this.particles * 4);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.state.fbo);
+    gl.readPixels(0, 0, this.steps, this.particles, gl.RGBA, gl.FLOAT, out);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    return out;
+  }
+
+  resize({ particles, steps }) {
+    if (particles === this.particles && steps === this.steps) return;
+    this.state.destroy();
+    this.tmp.destroy();
+    this.particles = particles;
+    this.steps = steps;
+    this.state = floatTarget(this.gl, steps, particles);
+    this.tmp = floatTarget(this.gl, 1, particles);
+  }
+
+  destroy() {
+    this.state.destroy();
+    this.tmp.destroy();
+    this.quad.destroy();
+    this.init.destroy();
+    this.copy.destroy();
+    for (const p of this.programs.values()) p.destroy();
+    this.programs.clear();
+  }
+}
+
+Object.assign(__exports, { Simulation });
+
+});
+
+__def("lines.js", function (__exports, __req) {
+// Trail renderer. Every visible segment and every joint is an instanced quad
+// whose corners are placed in screen space by the vertex shader, so line width
+// is in pixels and independent of depth. Round joints come from an SDF the
+// fragment shader turns into alpha, resolved by alpha-to-coverage against the
+// multisampled default framebuffer -- that keeps the pass opaque, so trails can
+// depth-test against each other without any sorting.
+
+const { program } = __req('glutil.js');
+
+const VERT = `#version 300 es
+precision highp float;
+precision highp int;
+
+layout(location = 0) in vec2 corner;   // (0..1, 0..1)
+
+uniform mat4 uProjView, uTransform;
+uniform sampler2D uState;
+uniform ivec4 uRing;      // steps, particles, head, filled
+uniform int uSegsPerTrail, uMode, uShadow;
+uniform vec2 uResolution; // device pixels
+uniform float uWidth, uFade, uTailFade, uColorMode, uFloorY;
+uniform vec3 uColor1, uColor2, uBackground, uShadowColor;
+
+out vec2 vLineCoord;
+out float vWidth, vShade;
+out vec4 vColor;
+
+vec3 quasirandom (float n) {
+  const float g = 1.22074408460575947536;
+  return fract(0.5 + n * vec3(1.0 / g, 1.0 / (g * g), 1.0 / (g * g * g))).zyx;
+}
+
+vec4 clipOf (int particle, int slot) {
+  int column = (uRing.z + 1 + slot) % uRing.x;
+  vec4 world = uTransform * vec4(texelFetch(uState, ivec2(column, particle), 0).xyz, 1.0);
+  if (uShadow == 1) world.y = uFloorY;
+  return uProjView * world;
+}
+
+float widthAt (float param) {
+  return uWidth * exp(-3.0 * uFade * (1.0 - param));
+}
+
+void main () {
+  int steps = uRing.x;
+  int particle = gl_InstanceID / uSegsPerTrail;
+  int slot = gl_InstanceID - particle * uSegsPerTrail;
+
+  // Slots older than what has actually been simulated are collapsed away.
+  bool alive = slot >= steps - uRing.w;
+
+  float denom = float(steps - 1);
+  float paramA = float(slot) / denom;
+  float paramB = float(slot + 1) / denom;
+  float pn = (float(particle) + 0.5) / float(uRing.y);
+
+  vec4 clipA = clipOf(particle, slot);
+  vec4 clipB = uMode == 0 ? clipOf(particle, slot + 1) : clipA;
+
+  if (!alive || clipA.w <= 0.0 || clipB.w <= 0.0) {
+    gl_Position = vec4(0.0, 0.0, 2.0, 1.0);  // behind the far plane: clipped
+    vLineCoord = vec2(0.0);
+    vWidth = 1.0;
+    vShade = 0.0;
+    vColor = vec4(0.0);
+    return;
+  }
+
+  vec2 halfRes = 0.5 * uResolution;
+  vec2 pxA = (clipA.xy / clipA.w) * halfRes;
+  vec2 pxB = (clipB.xy / clipB.w) * halfRes;
+  float zA = clipA.z / clipA.w;
+  float zB = clipB.z / clipB.w;
+
+  float along, across, param, z;
+  vec2 px;
+
+  if (uMode == 0) {
+    along = corner.x;
+    across = corner.y * 2.0 - 1.0;
+    param = mix(paramA, paramB, along);
+    vWidth = widthAt(param);
+    vec2 d = pxB - pxA;
+    float len = length(d);
+    vec2 dir = len > 1e-5 ? d / len : vec2(1.0, 0.0);
+    px = mix(pxA, pxB, along) + vec2(-dir.y, dir.x) * across * (0.5 * vWidth);
+    z = mix(zA, zB, along);
+    vLineCoord = vec2(0.0, across);
+    vShade = across;
+  } else {
+    vec2 c = corner * 2.0 - 1.0;
+    param = paramA;
+    vWidth = widthAt(param);
+    px = pxA + c * (0.5 * vWidth);
+    // Nudged away from the eye so the segments drawn afterwards win wherever
+    // they overlap, leaving only the part of the disc that is a real joint.
+    z = zA + 1e-5;
+    vLineCoord = c;
+
+    // Shade the disc across the stroke, not radially, so a joint does not
+    // read as a bead threaded onto the line.
+    int neighbour = slot < steps - 1 ? slot + 1 : slot - 1;
+    vec4 clipN = clipOf(particle, neighbour);
+    vec2 tangent = vec2(1.0, 0.0);
+    if (clipN.w > 0.0) {
+      vec2 delta = (clipN.xy / clipN.w) * halfRes - pxA;
+      if (length(delta) > 1e-5) tangent = normalize(delta);
+    }
+    vShade = dot(c, vec2(-tangent.y, tangent.x));
+  }
+
+  // Per-trail depth nudge, so trails that overlap exactly do not z-fight.
+  z -= 0.0001 * abs(pn - 0.5);
+
+  gl_Position = vec4(px / halfRes, z, 1.0);
+
+  if (uShadow == 1) {
+    vColor = vec4(uShadowColor, 1.0);
+  } else {
+    float coord = mix(quasirandom(float(particle) + 0.5).z, pn, uColorMode);
+    vec3 rgb = mix(uColor1, uColor2, coord);
+    rgb = mix(rgb, uBackground, uTailFade * pow(1.0 - param, 0.7));
+    vColor = vec4(rgb, 1.0);
+  }
+}`;
+
+const FRAG = `#version 300 es
+precision highp float;
+precision highp int;
+
+in vec2 vLineCoord;
+in float vWidth, vShade;
+in vec4 vColor;
+
+uniform int uShadow;
+uniform float uShading;
+uniform vec2 uBorderWidth;
+uniform vec4 uBorderColor;
+
+out vec4 fragColor;
+
+float linearstep (float a, float b, float x) { return clamp((x - a) / (b - a), 0.0, 1.0); }
+
+void main () {
+  float sdf = length(vLineCoord);
+
+  if (uShadow == 1) {
+    fragColor = vec4(vColor.rgb, linearstep(1.0, 1.0 - 2.0 / vWidth, sdf));
+    return;
+  }
+
+  // A cheap cylindrical highlight across the width of the stroke.
+  float highlight = 1.0 - vShade * vShade;
+  float shade = mix(1.0, highlight, uShading);
+  shade = mix(shade, 1.0, uShading * highlight * 0.7);
+
+  vec2 threshold = 1.0 - uBorderWidth / vWidth;
+  float isBorder = linearstep(threshold.x, threshold.y, sdf);
+
+  vec3 rgb = mix(vColor.rgb * shade, uBorderColor.rgb, isBorder * uBorderColor.a);
+  fragColor = vec4(rgb, linearstep(1.0, 1.0 - 2.0 / vWidth, sdf));
+}`;
+
+class TrailRenderer {
+  constructor(gl) {
+    this.gl = gl;
+    this.prog = program(gl, VERT, FRAG);
+    this.vao = gl.createVertexArray();
+    this.buf = gl.createBuffer();
+    gl.bindVertexArray(this.vao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.buf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 0, 0, 1, 1, 0, 1, 1]), gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+    gl.vertexAttribDivisor(0, 0);
+    gl.bindVertexArray(null);
+  }
+
+  draw(sim, camera, style, { shadow = false } = {}) {
+    const gl = this.gl;
+    const { u, program: p } = this.prog;
+    const dpr = style.pixelRatio;
+    const width = Math.max(0.5, style.width * dpr);
+
+    gl.useProgram(p);
+    gl.bindVertexArray(this.vao);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, sim.state.tex);
+
+    gl.uniform1i(u.uState, 0);
+    gl.uniformMatrix4fv(u.uProjView, false, camera.projView);
+    gl.uniformMatrix4fv(u.uTransform, false, style.transform);
+    gl.uniform4i(u.uRing, sim.steps, sim.particles, sim.head, sim.filled);
+    gl.uniform2f(u.uResolution, gl.drawingBufferWidth, gl.drawingBufferHeight);
+    gl.uniform1f(u.uWidth, shadow ? width * 1.05 : width);
+    gl.uniform1f(u.uFade, style.fade);
+    gl.uniform1f(u.uTailFade, shadow ? 0 : style.tailFade);
+    gl.uniform1f(u.uColorMode, style.colorBy === 'random' ? 1 : 0);
+    gl.uniform1f(u.uFloorY, style.floorY);
+    gl.uniform3fv(u.uColor1, style.color1);
+    gl.uniform3fv(u.uColor2, style.color2);
+    gl.uniform3fv(u.uBackground, style.background);
+    gl.uniform3fv(u.uShadowColor, style.shadowColor);
+    gl.uniform1i(u.uShadow, shadow ? 1 : 0);
+    gl.uniform1f(u.uShading, style.shading);
+    gl.uniform2f(u.uBorderWidth,
+      2.0 * style.borderWidth * dpr + 0.75,
+      2.0 * style.borderWidth * dpr - 0.75);
+    gl.uniform4f(u.uBorderColor, ...style.borderColor, style.borderOpacity);
+
+    // Joints first, segments over them: what remains of a disc is exactly the
+    // wedge a corner needs, plus the round caps at either end of a trail.
+    gl.uniform1i(u.uSegsPerTrail, sim.steps);
+    gl.uniform1i(u.uMode, 1);
+    gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, sim.particles * sim.steps);
+
+    gl.uniform1i(u.uSegsPerTrail, sim.steps - 1);
+    gl.uniform1i(u.uMode, 0);
+    gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, sim.particles * (sim.steps - 1));
+
+    gl.bindVertexArray(null);
+  }
+
+  destroy() {
+    this.prog.destroy();
+    this.gl.deleteVertexArray(this.vao);
+    this.gl.deleteBuffer(this.buf);
+  }
+}
+
+Object.assign(__exports, { TrailRenderer });
+
+});
+
+__def("stage.js", function (__exports, __req) {
+// The room the attractor sits in: a box of faint grid paper, drawn only on the
+// far side of the camera so it reads as a backdrop and floor rather than a cage.
+// Ported from the notebook's "fancy axes" cell.
+
+const { program } = __req('glutil.js');
+const mat4 = __req('mat4.js');
+
+const VERT = `#version 300 es
+precision highp float;
+
+layout(location = 0) in vec3 position;
+layout(location = 1) in vec3 normal;
+layout(location = 2) in vec3 tangent;
+layout(location = 3) in vec3 bitangent;
+
+uniform mat4 uProjView, uModel;
+uniform mat3 uNormalMatrix;
+
+out vec2 vCoord;
+out vec3 vPos, vNormal;
+
+void main () {
+  vPos = (uModel * vec4(position, 1.0)).xyz;
+  vNormal = uNormalMatrix * normal;
+  vCoord = vec2(dot(position, bitangent), dot(position, tangent));
+  gl_Position = uProjView * vec4(vPos, 1.0);
+}`;
+
+const FRAG = `#version 300 es
+precision highp float;
+
+in vec2 vCoord;
+in vec3 vPos, vNormal;
+
+uniform vec3 uEye, uGridColor;
+uniform float uOpacity, uGridScale;
+
+out vec4 fragColor;
+
+float gridFactor (vec2 parameter, float width) {
+  vec2 d = fwidth(parameter);
+  vec2 looped = 0.5 - abs(mod(parameter, 1.0) - 0.5);
+  vec2 a2 = smoothstep(d * (width + 0.5), d * (width - 0.5), looped);
+  return max(a2.x, a2.y);
+}
+
+void main () {
+  vec3 n = normalize(vNormal);
+  float vDotN = dot(normalize(vPos - uEye), n);
+
+  // Only the walls behind the subject; the ones between us and it are dropped.
+  if (vDotN < 0.0) discard;
+
+  float fade = smoothstep(0.02, 0.25, vDotN);
+  // Cell size stays fixed in world units however large the room gets.
+  float alpha = fade * uOpacity * (
+    gridFactor(vCoord * 4.0 * uGridScale, 0.5) +
+    0.2 * gridFactor(vCoord * 40.0 * uGridScale, 0.5)
+  );
+  if (alpha < 0.002) discard;
+  fragColor = vec4(uGridColor, alpha);
+}`;
+
+function boxGeometry() {
+  const position = [], normal = [], tangent = [], bitangent = [], index = [];
+  const basis = [
+    [1, 0, 0],
+    [0, 1, 0],
+    [0, 0, 1]
+  ];
+  for (let axis = 0; axis < 3; axis++) {
+    const n = basis[axis];
+    const t = basis[(axis + 1) % 3];
+    const b = basis[(axis + 2) % 3];
+    for (const sign of [1, -1]) {
+      const base = position.length / 3;
+      for (const [su, sv] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+        position.push(
+          sign * n[0] + su * t[0] + sv * b[0],
+          sign * n[1] + su * t[1] + sv * b[1],
+          sign * n[2] + su * t[2] + sv * b[2]
+        );
+        normal.push(sign * n[0], sign * n[1], sign * n[2]);
+        tangent.push(...t);
+        bitangent.push(...b);
+      }
+      index.push(base, base + 1, base + 2, base, base + 2, base + 3);
+    }
+  }
+  return { position, normal, tangent, bitangent, index };
+}
+
+class Stage {
+  constructor(gl) {
+    this.gl = gl;
+    this.prog = program(gl, VERT, FRAG);
+
+    const g = boxGeometry();
+    this.count = g.index.length;
+    this.vao = gl.createVertexArray();
+    gl.bindVertexArray(this.vao);
+    this.buffers = [];
+    [g.position, g.normal, g.tangent, g.bitangent].forEach((data, loc) => {
+      const buf = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data), gl.STATIC_DRAW);
+      gl.enableVertexAttribArray(loc);
+      gl.vertexAttribPointer(loc, 3, gl.FLOAT, false, 0, 0);
+      this.buffers.push(buf);
+    });
+    this.ibo = gl.createBuffer();
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.ibo);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(g.index), gl.STATIC_DRAW);
+    gl.bindVertexArray(null);
+
+    this.model = mat4.create();
+    this.normalMatrix = new Float32Array(9);
+    this.shaped = null;
+  }
+
+  // A cube of half-extent `half` whose underside rests on `floorY`.
+  shape(half, floorY) {
+    const key = `${half}:${floorY}`;
+    if (this.shaped === key) return;
+    this.shaped = key;
+    mat4.scale(this.model, mat4.fromTranslation(mat4.create(), [0, floorY + half, 0]), [half, half, half]);
+    mat4.normalFromMat4(this.normalMatrix, this.model);
+  }
+
+  draw(camera, style) {
+    const gl = this.gl;
+    const { u, program: p } = this.prog;
+    this.shape(style.roomHalf, style.floorY);
+    gl.useProgram(p);
+    gl.bindVertexArray(this.vao);
+    gl.uniformMatrix4fv(u.uProjView, false, camera.projView);
+    gl.uniformMatrix4fv(u.uModel, false, this.model);
+    gl.uniformMatrix3fv(u.uNormalMatrix, false, this.normalMatrix);
+    gl.uniform3fv(u.uEye, camera.eye);
+    gl.uniform3fv(u.uGridColor, style.gridColor);
+    gl.uniform1f(u.uOpacity, style.gridOpacity);
+    gl.uniform1f(u.uGridScale, style.roomHalf / 2);
+
+    gl.enable(gl.BLEND);
+    gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE);
+    gl.depthMask(false);
+    gl.drawElements(gl.TRIANGLES, this.count, gl.UNSIGNED_SHORT, 0);
+    gl.depthMask(true);
+    gl.disable(gl.BLEND);
+    gl.bindVertexArray(null);
+  }
+
+  destroy() {
+    this.prog.destroy();
+    this.gl.deleteVertexArray(this.vao);
+    this.buffers.forEach(b => this.gl.deleteBuffer(b));
+    this.gl.deleteBuffer(this.ibo);
+  }
+}
+
+Object.assign(__exports, { Stage });
+
+});
+
+__def("mat4.js", function (__exports, __req) {
+// Minimal column-major 4x4 / 3x3 matrix helpers (gl-matrix subset).
+
+const create = () => new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]);
+
+function identity(o) {
+  o[0]=1;o[1]=0;o[2]=0;o[3]=0; o[4]=0;o[5]=1;o[6]=0;o[7]=0;
+  o[8]=0;o[9]=0;o[10]=1;o[11]=0; o[12]=0;o[13]=0;o[14]=0;o[15]=1;
+  return o;
+}
+
+function multiply(o, a, b) {
+  const a00=a[0],a01=a[1],a02=a[2],a03=a[3],a10=a[4],a11=a[5],a12=a[6],a13=a[7],
+        a20=a[8],a21=a[9],a22=a[10],a23=a[11],a30=a[12],a31=a[13],a32=a[14],a33=a[15];
+  for (let i = 0; i < 4; i++) {
+    const b0=b[i*4],b1=b[i*4+1],b2=b[i*4+2],b3=b[i*4+3];
+    o[i*4]   = b0*a00 + b1*a10 + b2*a20 + b3*a30;
+    o[i*4+1] = b0*a01 + b1*a11 + b2*a21 + b3*a31;
+    o[i*4+2] = b0*a02 + b1*a12 + b2*a22 + b3*a32;
+    o[i*4+3] = b0*a03 + b1*a13 + b2*a23 + b3*a33;
+  }
+  return o;
+}
+
+function translate(o, a, v) {
+  const [x,y,z] = v;
+  if (o !== a) o.set(a);
+  o[12] = a[0]*x + a[4]*y + a[8]*z + a[12];
+  o[13] = a[1]*x + a[5]*y + a[9]*z + a[13];
+  o[14] = a[2]*x + a[6]*y + a[10]*z + a[14];
+  o[15] = a[3]*x + a[7]*y + a[11]*z + a[15];
+  return o;
+}
+
+function scale(o, a, v) {
+  const [x,y,z] = v;
+  for (let i = 0; i < 4; i++) { o[i]=a[i]*x; o[4+i]=a[4+i]*y; o[8+i]=a[8+i]*z; o[12+i]=a[12+i]; }
+  return o;
+}
+
+function rotateAxis(o, a, rad, axis) {
+  const s = Math.sin(rad), c = Math.cos(rad);
+  // columns to mix: (1,2) for X, (2,0) for Y, (0,1) for Z
+  const [p, q] = axis === 0 ? [1,2] : axis === 1 ? [2,0] : [0,1];
+  const P = [a[p*4],a[p*4+1],a[p*4+2],a[p*4+3]];
+  const Q = [a[q*4],a[q*4+1],a[q*4+2],a[q*4+3]];
+  if (o !== a) o.set(a);
+  for (let i = 0; i < 4; i++) {
+    o[p*4+i] = P[i]*c + Q[i]*s;
+    o[q*4+i] = Q[i]*c - P[i]*s;
+  }
+  return o;
+}
+
+const rotateX = (o,a,r) => rotateAxis(o,a,r,0);
+const rotateY = (o,a,r) => rotateAxis(o,a,r,1);
+const rotateZ = (o,a,r) => rotateAxis(o,a,r,2);
+
+function fromTranslation(o, v) { identity(o); o[12]=v[0]; o[13]=v[1]; o[14]=v[2]; return o; }
+
+function invert(o, a) {
+  const [a00,a01,a02,a03,a10,a11,a12,a13,a20,a21,a22,a23,a30,a31,a32,a33] = a;
+  const b00=a00*a11-a01*a10, b01=a00*a12-a02*a10, b02=a00*a13-a03*a10,
+        b03=a01*a12-a02*a11, b04=a01*a13-a03*a11, b05=a02*a13-a03*a12,
+        b06=a20*a31-a21*a30, b07=a20*a32-a22*a30, b08=a20*a33-a23*a30,
+        b09=a21*a32-a22*a31, b10=a21*a33-a23*a31, b11=a22*a33-a23*a32;
+  let det = b00*b11 - b01*b10 + b02*b09 + b03*b08 - b04*b07 + b05*b06;
+  if (!det) return null;
+  det = 1.0 / det;
+  o[0]=(a11*b11-a12*b10+a13*b09)*det;  o[1]=(a02*b10-a01*b11-a03*b09)*det;
+  o[2]=(a31*b05-a32*b04+a33*b03)*det;  o[3]=(a22*b04-a21*b05-a23*b03)*det;
+  o[4]=(a12*b08-a10*b11-a13*b07)*det;  o[5]=(a00*b11-a02*b08+a03*b07)*det;
+  o[6]=(a32*b02-a30*b05-a33*b01)*det;  o[7]=(a20*b05-a22*b02+a23*b01)*det;
+  o[8]=(a10*b10-a11*b08+a13*b06)*det;  o[9]=(a01*b08-a00*b10-a03*b06)*det;
+  o[10]=(a30*b04-a31*b02+a33*b00)*det; o[11]=(a21*b02-a20*b04-a23*b00)*det;
+  o[12]=(a11*b07-a10*b09-a12*b06)*det; o[13]=(a00*b09-a01*b07+a02*b06)*det;
+  o[14]=(a31*b01-a30*b03-a32*b00)*det; o[15]=(a20*b03-a21*b01+a22*b00)*det;
+  return o;
+}
+
+function perspective(o, fovy, aspect, near, far) {
+  const f = 1.0 / Math.tan(fovy / 2);
+  o.fill(0);
+  o[0] = f / aspect; o[5] = f; o[11] = -1;
+  o[10] = (far + near) / (near - far);
+  o[14] = (2 * far * near) / (near - far);
+  return o;
+}
+
+function lookAt(o, eye, center, up) {
+  let z0=eye[0]-center[0], z1=eye[1]-center[1], z2=eye[2]-center[2];
+  let len = 1 / Math.hypot(z0, z1, z2);
+  z0*=len; z1*=len; z2*=len;
+  let x0 = up[1]*z2 - up[2]*z1, x1 = up[2]*z0 - up[0]*z2, x2 = up[0]*z1 - up[1]*z0;
+  len = Math.hypot(x0, x1, x2);
+  if (!len) { x0 = x1 = x2 = 0; } else { len = 1/len; x0*=len; x1*=len; x2*=len; }
+  const y0 = z1*x2 - z2*x1, y1 = z2*x0 - z0*x2, y2 = z0*x1 - z1*x0;
+  o[0]=x0; o[1]=y0; o[2]=z0; o[3]=0;
+  o[4]=x1; o[5]=y1; o[6]=z1; o[7]=0;
+  o[8]=x2; o[9]=y2; o[10]=z2; o[11]=0;
+  o[12]=-(x0*eye[0]+x1*eye[1]+x2*eye[2]);
+  o[13]=-(y0*eye[0]+y1*eye[1]+y2*eye[2]);
+  o[14]=-(z0*eye[0]+z1*eye[1]+z2*eye[2]);
+  o[15]=1;
+  return o;
+}
+
+// Upper-left 3x3 inverse-transpose, as a mat3 (9 floats).
+function normalFromMat4(o, a) {
+  const inv = invert(create(), a);
+  if (!inv) return null;
+  o[0]=inv[0]; o[1]=inv[4]; o[2]=inv[8];
+  o[3]=inv[1]; o[4]=inv[5]; o[5]=inv[9];
+  o[6]=inv[2]; o[7]=inv[6]; o[8]=inv[10];
+  return o;
+}
+
+// The notebook's `createTransform`: maps attractor coordinates into a unit-ish
+// box centred at y = 0.5, sitting on the floor plane at y = -0.5.
+function viewTransform({ center = [0,0,0], size = [1,1,1], rotation = [0,0,0] } = {}) {
+  const m = create();
+  translate(m, m, center);
+  scale(m, m, size);
+  rotateX(m, m, rotation[0]);
+  rotateY(m, m, rotation[1]);
+  rotateZ(m, m, rotation[2]);
+  invert(m, m);
+  return multiply(m, fromTranslation(create(), [0, 0.5, 0]), m);
+}
+
+Object.assign(__exports, { create, identity, multiply, translate, scale, rotateX, rotateY, rotateZ, fromTranslation, invert, perspective, lookAt, normalFromMat4, viewTransform });
+
+});
+
+__def("camera.js", function (__exports, __req) {
+// Orbit camera with a slow, never-quite-repeating drift.
+
+const mat4 = __req('mat4.js');
+
+class Camera {
+  constructor() {
+    this.target = [0, 0.5, 0];
+    this.distance = 3.2;
+    this.theta = 0.9;       // azimuth
+    this.phi = 0.32;        // elevation, radians above the horizon
+    this.fov = Math.PI / 4;
+    this.aspect = 1;
+
+    this.dTheta = 0.0022;   // radians per frame at 60fps
+    this.phiCenter = 0.32;
+    this.phiSwing = 0.22;
+    this.phiRate = 0.11;
+    this.clock = 0;
+
+    this.eye = new Float32Array(3);
+    this.view = mat4.create();
+    this.projection = mat4.create();
+    this.projView = mat4.create();
+    this.drag = null;
+  }
+
+  // Randomise the vantage point without ever ducking under the floor.
+  randomize(rng = Math.random) {
+    this.theta = rng() * Math.PI * 2;
+    this.phiCenter = 0.12 + rng() * 0.5;
+    this.phiSwing = 0.06 + rng() * 0.22;
+    this.phiRate = 0.06 + rng() * 0.12;
+    this.dTheta = (rng() < 0.5 ? -1 : 1) * (0.0012 + rng() * 0.0022);
+    this.distance = 2.9 + rng() * 0.9;
+    this.clock = rng() * 100;
+  }
+
+  update(dt) {
+    this.clock += dt;
+    if (!this.drag) {
+      this.theta += this.dTheta * dt * 60;
+      this.phi = this.phiCenter + this.phiSwing * Math.sin(this.clock * this.phiRate);
+    }
+    this.phi = Math.max(-0.45, Math.min(1.45, this.phi));
+
+    const cp = Math.cos(this.phi), sp = Math.sin(this.phi);
+    this.eye[0] = this.target[0] + this.distance * cp * Math.cos(this.theta);
+    this.eye[1] = this.target[1] + this.distance * sp;
+    this.eye[2] = this.target[2] + this.distance * cp * Math.sin(this.theta);
+
+    mat4.perspective(this.projection, this.fov, this.aspect, 0.05, 60);
+    mat4.lookAt(this.view, this.eye, this.target, [0, 1, 0]);
+    mat4.multiply(this.projView, this.projection, this.view);
+  }
+
+  // Back off far enough that a sphere of `radius` about the target fits the
+  // narrower of the two field-of-view angles, with room to breathe.
+  frameRadius(radius, margin = 1.35) {
+    const vertical = this.fov / 2;
+    const horizontal = Math.atan(Math.tan(vertical) * this.aspect);
+    const half = Math.min(vertical, horizontal);
+    this.distance = Math.max(1.4, Math.min(9, (radius / Math.sin(half)) * margin));
+  }
+
+  orbitBy(dx, dy) {
+    this.theta -= dx * 0.005;
+    this.phiCenter = Math.max(-0.4, Math.min(1.4, this.phiCenter - dy * 0.005));
+    this.phi = this.phiCenter;
+  }
+
+  zoomBy(delta) {
+    this.distance = Math.max(0.8, Math.min(12, this.distance * Math.exp(delta * 0.0012)));
+  }
+}
+
+Object.assign(__exports, { Camera });
+
+});
+
+__def("director.js", function (__exports, __req) {
+// Runs the show: shuffles through the attractors, dresses each one in a
+// different palette and camera move, and cross-fades between them.
+
+const { ATTRACTORS, byName } = __req('attractors.js');
+const { PALETTES } = __req('palettes.js');
+const { viewTransform } = __req('mat4.js');
+
+const shuffle = (arr, rng) => {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+};
+
+const lerp = (a, b, t) => a + (b - a) * t;
+
+// Where the trajectory actually lives, in view coordinates: the radius of the
+// ball about `target` holding all but the wildest 1.5% of it, and the height
+// its underside reaches. Stragglers are excluded so one escaping particle
+// cannot push the camera into the next county.
+function occupancy(positions, m, target, maxSamples = 24000) {
+  const count = positions.length / 4;
+  const stride = Math.max(1, Math.ceil(count / maxSamples));
+  const radii = [];
+  const heights = [];
+  for (let i = 0; i < count; i += stride) {
+    const x = positions[i * 4], y = positions[i * 4 + 1], z = positions[i * 4 + 2];
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+    const wx = m[0] * x + m[4] * y + m[8] * z + m[12];
+    const wy = m[1] * x + m[5] * y + m[9] * z + m[13];
+    const wz = m[2] * x + m[6] * y + m[10] * z + m[14];
+    radii.push(Math.hypot(wx - target[0], wy - target[1], wz - target[2]));
+    heights.push(wy);
+  }
+  if (!radii.length) return { radius: 0.7, bottom: 0 };
+  radii.sort((a, b) => a - b);
+  heights.sort((a, b) => a - b);
+  const at = (arr, q) => arr[Math.min(arr.length - 1, Math.floor(arr.length * q))];
+  return { radius: at(radii, 0.985) || 0.7, bottom: at(heights, 0.015) };
+}
+
+const transforms = new Map();
+function transformFor(attractor) {
+  let t = transforms.get(attractor.name);
+  if (!t) {
+    t = viewTransform(attractor.view);
+    transforms.set(attractor.name, t);
+  }
+  return t;
+}
+
+class Director {
+  constructor(scene, {
+    duration = 45,
+    fadeTime = 1.4,
+    rng = Math.random,
+    theme = 'any',
+    pinned = null,
+    quality = null,
+    onChange = () => {}
+  } = {}) {
+    this.scene = scene;
+    this.duration = duration;
+    this.fadeTime = fadeTime;
+    this.rng = rng;
+    this.theme = theme;
+    this.quality = quality;
+    this.onChange = onChange;
+    this.paused = false;
+
+    const start = pinned ? byName(pinned) : null;
+    this.playlist = shuffle(ATTRACTORS, rng);
+    if (start) this.playlist = [start, ...this.playlist.filter(a => a !== start)];
+    this.index = 0;
+
+    this.veil = 1;
+    this.phase = 'in';
+    this.held = 0;
+    this.load(this.playlist[0]);
+  }
+
+  get current() { return this.playlist[this.index]; }
+
+  palettePool() {
+    if (this.theme === 'dark') return PALETTES.filter(p => p.dark);
+    if (this.theme === 'paper') return PALETTES.filter(p => !p.dark);
+    return PALETTES;
+  }
+
+  dress(attractor) {
+    const r = this.rng;
+    const pool = this.palettePool();
+    const palette = pool[Math.floor(r() * pool.length)];
+    const flip = r() < 0.5;
+
+    return {
+      palette,
+      transform: transformFor(attractor),
+      background: palette.background,
+      color1: flip ? palette.color2 : palette.color1,
+      color2: flip ? palette.color1 : palette.color2,
+      borderColor: palette.borderColor,
+      borderOpacity: lerp(0.5, 0.95, r()),
+      borderWidth: lerp(0.3, 0.9, r()),
+      gridColor: palette.gridColor,
+      gridOpacity: r() < 0.18 ? 0 : palette.gridOpacity * lerp(0.45, 1.0, r()),
+      shadowColor: palette.shadowColor,
+      shadow: r() < 0.7,
+      shading: lerp(0.05, 0.3, r()),
+      width: lerp(4, 11, r() ** 1.5),
+      fade: lerp(0.1, 0.6, r()),
+      tailFade: lerp(0.08, 0.42, r()),
+      colorBy: r() < 0.7 ? 'radius' : 'random',
+      floorY: -0.5,
+      roomHalf: 2,
+      pixelRatio: 1
+    };
+  }
+
+  load(attractor) {
+    // Resolution changes land here, between shots, where they are invisible.
+    if (this.quality) this.scene.sim.resize(this.quality());
+    const style = this.dress(attractor);
+    style.pixelRatio = this.scene.style ? this.scene.style.pixelRatio : 1;
+    this.scene.style = style;
+    this.scene.camera.randomize(this.rng);
+    this.scene.sim.reset(attractor);
+    this.scene.sim.spinUp();
+
+    const { radius, bottom } = occupancy(
+      this.scene.sim.readPositions(), style.transform, this.scene.camera.target);
+    this.scene.camera.frameRadius(radius, lerp(1.22, 1.55, this.rng()));
+
+    // Keep the floor just under the subject and grow the room to match, so a
+    // sprawling system gets a hall and a compact one gets a room.
+    style.floorY = Math.min(-0.5, bottom - 0.08 * radius);
+    style.roomHalf = Math.max(2, radius * 2.2);
+
+    this.held = 0;
+    this.onChange(attractor, style, this);
+  }
+
+  cut(index) {
+    this.index = (index + this.playlist.length) % this.playlist.length;
+    this.load(this.current);
+    this.veil = Math.max(this.veil, 0.85);
+    this.phase = 'in';
+  }
+
+  jump(delta) { this.cut(this.index + delta); }
+
+  goTo(name) {
+    const i = this.playlist.findIndex(a => a.name === name);
+    if (i >= 0) this.cut(i);
+  }
+
+  reshuffleLook() {
+    const style = this.dress(this.current);
+    style.pixelRatio = this.scene.style.pixelRatio;
+    this.scene.style = style;
+    this.onChange(this.current, style, this);
+  }
+
+  advance(dt) {
+    if (this.phase === 'in') {
+      this.veil -= dt / this.fadeTime;
+      if (this.veil <= 0) { this.veil = 0; this.phase = 'hold'; }
+    } else if (this.phase === 'hold') {
+      if (!this.paused) this.held += dt;
+      if (this.duration > 0 && this.held >= this.duration) this.phase = 'out';
+    } else {
+      this.veil += dt / this.fadeTime;
+      if (this.veil >= 1) {
+        this.veil = 1;
+        this.index = (this.index + 1) % this.playlist.length;
+        this.load(this.current);
+        this.phase = 'in';
+      }
+    }
+    return this.veil;
+  }
+}
+
+Object.assign(__exports, { Director });
+
+});
+
+__def("attractors.js", function (__exports, __req) {
+// Generated from Ricky Reusser's "Strange Attractors on the GPU, Part 2"
+// https://observablehq.com/@rreusser/strange-attractors-on-the-gpu-part-2
+// Regenerate with: node tools/gen-attractors.mjs (see README).
+
+const ATTRACTORS = [
+  {
+    name: "Akgul-Pehlivan",
+    deriv: `
+    a * y - x + z * y,
+    -b * x * z - c * x + y * z + d,
+    e - f * x * y - x * x`,
+    params: {"a":2.8,"b":0.2,"c":1.4,"d":1,"e":10,"f":2},
+    dt: 0.01,
+    initScale: 5,
+    view: { center: [0, 0, -5], size: [15, 15, 15], rotation: [1.5707963268, 0, 0] },
+    refs: [{"title":"A new three-dimensional chaotic system without equilibrium points, its dynamical analyses, and electronic circuit applications","authors":["A. Akgul","I. Pehlivan"],"url":"https://www.researchgate.net/publication/303284335_A_new_three-dimensional_chaotic_system_its_dynamical_analysis_and_electronic_circuit_applications","deets":"Tehnicki Vjesnik 23(1) (2016), pages 209-214."}],
+  },
+  {
+    name: "Aizawa",
+    deriv: `
+    (z - b) * x - d * y,
+    d * x + (z - b) * y,
+    c + a * z - (z * z * z / 3.0) - (x * x + y * y) * (1.0 + e * z) + f * z * (x * x * x)`,
+    params: {"a":0.95,"b":0.7,"c":0.6,"d":3.5,"e":0.25,"f":0.1},
+    dt: 0.02,
+    initScale: 0.1,
+    view: { center: [0, 0, 0.8], size: [1.5, 1.5, 1.5], rotation: [1.5707963268, 0, 0] },
+    tex: ["(z - a) x - d y","d x + (z - b) y","c + a z - \\frac{1}{3}z^3 - (x^2 + y^2) (1 + e z) + f z x^3"],
+    refs: [{"title":"Numerical Studies of Torus Bifurcations","authors":["W. Langford"],"url":"https://www.researchgate.net/publication/238282172_Numerical_Studies_of_Torus_Bifurcations"}],
+  },
+  {
+    name: "Anishchenko-Astakhov",
+    deriv: `
+    mu * x + y - x * z,
+    -x,
+    -eta * z + eta * (x > 0.0 ? 1.0 : 0.0) * x * x`,
+    params: {"mu":1.2,"eta":0.5},
+    dt: 0.05,
+    initScale: 5,
+    initOrigin: [0, 0, 5],
+    view: { center: [0, 2, 0], size: [5, 5, 5], rotation: [0, -1.5707963268, 0] },
+    refs: [{"title":"The Anishchenko–Astakhov Oscillator of Chaotic Self-Sustained Oscillations","authors":["V. S. Anishchenko","T. E. Vadivasova","G. I. Strelkova"],"url":"https://link.springer.com/chapter/10.1007/978-3-319-06871-8_11","deets":"Deterministic Nonlinear Systems pages 175-201."}],
+  },
+  {
+    name: "Arneodo",
+    deriv: `
+    y,
+    z,
+    -a * x - b * y - z + c * x * x * x`,
+    params: {"a":-5.5,"b":3.5,"c":-1},
+    dt: 0.02,
+    initScale: 2,
+    view: { center: [0, 0, 0], size: [4, 10, 10], rotation: [1.5707963268, 0, 1.5707963268] },
+    tex: ["y","z","-a x - b y - z + c x^3"],
+    refs: [{"title":"Strange attractors in volterra equations for species in competition","authors":["A. Arneodo","P. Coullet","J. Peyraud","C. Tresser"],"url":"https://link.springer.com/article/10.1007/BF01832841","deets":"Journal of Mathematical Biology volume 14, pages 153–157 (1982)."}],
+  },
+  {
+    name: "Bouali",
+    deriv: `
+    x * (4.0 - y) + a * z,
+    -y * (1.0 - x * x),
+    -x * (b - z) - c * z`,
+    params: {"a":0.3,"b":1.5,"c":0.05},
+    dt: 0.02,
+    initOrigin: [1, 1, 0],
+    view: { center: [0, 4, -4], size: [6, 6, 6], rotation: [-1.5707963268, 1.5707963268, 0] },
+    tex: ["x (4 - y) + 0.3 z","-y (1 - x^2)","-x (1.5 - z) - 0.05 z"],
+    refs: [{"title":"A 3D Strange Attractor with a Distinctive Silhouette. The Butterfly Effect Revisited","authors":["S. Bouali"],"url":"https://arxiv.org/abs/1311.6128","deets":"(2013)."}],
+  },
+  {
+    name: "Bouali 2",
+    deriv: `
+    alpha * x * (1.0 - y) - beta * z,
+    -gamma * y * (1.0 - x * x),
+    mu * x`,
+    params: {"alpha":3,"beta":2.2,"gamma":1,"mu":1.51},
+    dt: 0.02,
+    initOrigin: [1, 1, 0],
+    view: { center: [0, 2, 0], size: [2.5, 2.5, 2.5], rotation: [0, -1.5707963268, 0] },
+    tex: ["\\alpha x (1 - y) - \\beta z","-y (1 - x^2)","\\mu x"],
+    refs: [{"title":"A 3D Strange Attractor with a Distinctive Silhouette. The Butterfly Effect Revisited","authors":["S. Bouali"],"url":"https://arxiv.org/abs/1311.6128","deets":"(2013)."}],
+  },
+  {
+    name: "Burke-Shaw",
+    deriv: `
+    -s * (x + y),
+    -y - s * x * z,
+    s * x * y + v`,
+    params: {"s":10,"v":4.272},
+    dt: 0.005,
+    view: { center: [0, 0, 0], size: [4, 4, 4], rotation: [-1.5707963268, 0, 0] },
+    tex: ["-s (x + y)","-y - s x z","s x y + v"],
+    refs: [{"title":"Burke-Shaw attractor","authors":["Paul Bourke"],"url":"http://paulbourke.net/fractals/burkeshaw/","deets":"(2010)."},{"title":"The Burke &amp; Shaw System","authors":["Christophe Letellier"],"url":"http://www.atomosyd.net/spip.php?article33","deets":"(2008)."}],
+  },
+  {
+    name: "Chen-Lee",
+    deriv: `
+    alpha * x - y * z,
+    beta * y + x * z,
+    gamma * z + x * y / 3.0`,
+    params: {"alpha":5,"beta":-10,"gamma":-0.38},
+    dt: 0.005,
+    initScale: 25,
+    view: { center: [0, 0, 0], size: [25, 25, 25], rotation: [-1.5707963268, 0, 0] },
+    tex: ["\\alpha x - y z","\\beta y + x z","\\gamma z + \\frac{1}{3} x y"],
+    refs: [{"title":"Alternative implementation of the chaotic Chen–Lee system","authors":["Long-Jye Sheu","Lap-Mou Tam","Hsien-Keng Chen","Seng-Kin Lao"],"url":"https://www.sciencedirect.com/science/article/abs/pii/S0960077908003524","deets":"Chaos, Solitons & Fractals, Volume 41, Issue 4 (2009), Pages 1923-1929."},{"title":"The Chen-Lee Attractor","url":"https://www.vorillaz.com/chen-lee-attractor/"}],
+  },
+  {
+    name: "Chen-Celikovsky",
+    deriv: `
+    alpha * (y - x),
+    -x * z + gamma * y,
+    x * y - beta * z`,
+    params: {"alpha":36,"beta":3,"gamma":20},
+    dt: 0.005,
+    initScale: 1,
+    initOrigin: [0, 0, 20],
+    view: { center: [0, 0, 20], size: [25, 25, 25], rotation: [1.5707963268, 0, 0] },
+    refs: [{}],
+  },
+  {
+    name: "Chen",
+    deriv: `
+    a * (y - x),
+    (c - a) * x - x * z + c * y,
+    x * y - b * z`,
+    params: {"a":40,"b":3,"c":28},
+    dt: 0.003,
+    initScale: 3,
+    initOrigin: [0, 0, 15],
+    view: { center: [0, 0, 20], size: [20, 20, 20], rotation: [1.5707963268, 0, 0] },
+    tex: ["a (y - x)","(c - a) x - x z + c y","x y - b z"],
+    refs: [{"title":"Wikipedia: Multiscroll Attractor","url":"https://en.wikipedia.org/wiki/Multiscroll_attractor#Lu_Chen_attractor"}],
+  },
+  {
+    name: "Coullet",
+    deriv: `
+    y,
+    z,
+    0.8 * x - 1.1 * y - 0.45 * z - x * x * x`,
+    dt: 0.05,
+    initScale: 0.2,
+    view: { center: [0, 0, 0], size: [1.5, 1.5, 1.5], rotation: [0, 0, 0] },
+    tex: ["y","z","0.8 x - 1.1 y - 0.45 z - x^3"],
+    refs: [{"title":"Possible new strange attractors with spiral structure","authors":["A. Arneodo","P. Coullet","C. Tresser"],"url":"https://projecteuclid.org/journals/communications-in-mathematical-physics/volume-79/issue-4/Possible-new-strange-attractors-with-spiral-structure/cmp/1103909142.full","deets":"Comm. Math. Phys. 79(4): 573-579 (1981)."}],
+  },
+  {
+    name: "Dadras",
+    deriv: `
+    y - a * x + b * y * z,
+    c * y - x * z + z,
+    d * x * y - e * z`,
+    params: {"a":3,"b":2.7,"c":1.7,"d":2,"e":9},
+    dt: 0.01,
+    initScale: 2,
+    view: { center: [0, 0, 0], size: [15, 15, 15], rotation: [0, 0, 0] },
+    tex: ["y - a x + b y z","c y - x z + z","d x y - e z"],
+    refs: [{"title":"The chaotic Dadras-Momeni system: Control and hyperchaotification","authors":["H. Saberi-Nik","R. A. Van Gorder","G. Gambino"],"url":"https://www.researchgate.net/publication/274511798_The_chaotic_Dadras-Momeni_system_Control_and_hyperchaotification","deets":"IMA Journal of Mathematical Control and Information (2015)."}],
+  },
+  {
+    name: "Duffing",
+    deriv: `
+    y,
+    gamma * cos(omega * t) - delta * y - alpha * x - beta * x * x * x,
+    -z`,
+    params: {"alpha":-1,"beta":1,"delta":0.3,"gamma":0.37,"omega":1.2},
+    dt: 0.05,
+    initScale: 2,
+    view: { center: [0, -0.1, 0], size: [1, 1, 1], rotation: [0, 0, 0] },
+  },
+  {
+    name: "Finance",
+    deriv: `
+    z + (y - a) * x,
+    1.0 - b * y - x * x,
+    -x - c * z`,
+    params: {"a":0.00001,"b":0.1,"c":1},
+    dt: 0.04,
+    initScale: 0.5,
+    initOrigin: [0, 0, 0],
+    view: { center: [0, 0, 0], size: [3.5, 3.5, 3.5], rotation: [3.1415926536, 1.5707963268, 0] },
+    tex: ["z + (y - a) x","1 - b y - x^2","-x - c z"],
+    refs: [{"title":"A New Finance Chaotic Attractor","authors":["G. Cai","J. Huang"],"url":"http://internonlinearscience.org/upload/papers/20110308103218810.pdf","deets":"International Journal of Nonlinear Science, Vol. 3 (2007) No. 3, pp. 213-220."}],
+  },
+  {
+    name: "Four-wing",
+    deriv: `
+    a * x + y * z,
+    b * x + d * y - x * z,
+    -z - x * y`,
+    params: {"a":0.2,"b":-0.01,"d":-0.4},
+    dt: 0.05,
+    initScale: 2,
+    view: { center: [0, 0, 0], size: [2.5, 2.5, 2.5], rotation: [0, 1.5707963268, 0] },
+    tex: ["0.2 x + y z","-0.01 x - 0.4 y - x z","-z - x y"],
+    refs: [{"title":"A 3-D four-wing attractor and its analysis","authors":["Z. Wang","Y. Sun","B. J. van Wyk","G. Qi","M. A. van Wyk"],"url":"https://www.scielo.br/j/bjp/a/PZsxkWyBdyDpS3sHTQVwKZq/?lang=en","deets":"Braz. J. Phys. 39 (3), Sept 2009."}],
+  },
+  {
+    name: "Genesio-Tesi",
+    deriv: `
+    y,
+    z,
+    -a * z - b * y - x * (1.0 + x)`,
+    params: {"a":0.446,"b":1.1},
+    dt: 0.05,
+    initScale: 0.2,
+    view: { center: [-0.2, 0, 0], size: [1, 1, 1], rotation: [-1.5707963268, 0, 1.5707963268] },
+    tex: ["y","z","-az - by - x(1 + x)"],
+    refs: [{"title":"The Genesio-Tesi System","authors":["Christophe Letellier"],"url":"http://www.atomosyd.net/spip.php?article153"},{"title":"Design, analysis of the Genesio-Tesi chaotic system and its electronic experimental implementation","authors":["A. Sambas","S. Vaidyanathan","M. Mamat","W. S. Mada Sanjaya"],"url":"https://www.researchgate.net/publication/303369826_Design_analysis_of_the_Genesio-Tesi_chaotic_system_and_its_electronic_experimental_implementation","deets":"International Journal of Circuit Theory and Applications, 9(1), 2016, pp. 141-149."}],
+  },
+  {
+    name: "Hadley",
+    deriv: `
+    a * z * y + z * x - x,
+    z * y - a * z * x - y + 1.0,
+    b * (c - z) - (x * x + y * y)`,
+    params: {"a":4,"b":0.2,"c":8},
+    dt: 0.01,
+    initScale: 1,
+    view: { center: [0, 0, 1], size: [2.5, 2.5, 2.5], rotation: [1.5707963268, 0, 0] },
+    tex: ["a z y + z x - x","z y - a z x - y + 1","b (c - z) - (x^2 + y^2)"],
+    refs: [{"title":"Wikipedia: Hadley Cell","url":"https://en.wikipedia.org/wiki/Hadley_cell"}],
+  },
+  {
+    name: "Halvorsen",
+    deriv: `
+    -sigma * x - 4.0 * (y + z) - y * y,
+    -sigma * y - 4.0 * (z + x) - z * z,
+    -sigma * z - 4.0 * (x + y) - x * x`,
+    params: {"sigma":1.3},
+    dt: 0.005,
+    initScale: 2,
+    initOrigin: [-2, -2, -2],
+    view: { center: [-3, -3, -3], size: [12, 12, 12], rotation: [0, 0, 0] },
+    tex: ["-\\sigma x - 4 (y + z) - y^2","-\\sigma y - 4 (z + x) - z^2","-\\sigma z - 4 (x + y) - x^2"],
+    refs: [{"title":"Breaking Symmetries of the Reservoir Equations in Echo State Networks","authors":["J. Herteux","C. Räth"],"url":"https://arxiv.org/abs/2010.07103","deets":"Chaos 30, 123142 (2020)."}],
+  },
+  {
+    name: "Liu-Chen",
+    deriv: `
+    0.4 * x - y * z,
+    -12.0 * y + x * z,
+    -5.0 * z + x * y`,
+    dt: 0.005,
+    initScale: 20,
+    view: { center: [0, 0, 0], size: [12, 12, 12], rotation: [0, 0, 0] },
+    tex: ["0.4 x - y z","-12 y + x z","-5 z + x y"],
+  },
+  {
+    name: "Lorenz",
+    deriv: `
+    sigma * (y - x),
+    x * (rho - z) - y,
+    x * y - beta * z`,
+    params: {"sigma":10,"rho":28,"beta":2.6666666666666665},
+    dt: 0.005,
+    initScale: 20,
+    initOrigin: [0, 0, 28],
+    view: { center: [0, 0, 28], size: [28, 28, 28], rotation: [1.5707963268, 0, 0] },
+    tex: ["\\sigma (y - x)","x(\\rho - z) - y","x y - \\beta z"],
+  },
+  {
+    name: "Lorenz Mod 1",
+    deriv: `
+    -alpha * x + y * y - z * z + alpha * beta,
+    x * (y - 4.0 * z) + gamma,
+    z + x * (4.0 * y + z)`,
+    params: {"alpha":0.1,"beta":14,"gamma":0.08},
+    dt: 0.001,
+    initScale: 20,
+    view: { center: [0, 0, 0], size: [40, 40, 40], rotation: [0, 0, 0] },
+    tex: ["-\\alpha x + y^2 - z^2 + \\alpha \\beta","x (y - 4 z) + \\gamma","z + x (4 y + z)"],
+  },
+  {
+    name: "Lorenz Mod 2",
+    deriv: `
+    -alpha * x + y * y - z * z + alpha * beta,
+    x * (y - 5.0 * z) + gamma,
+    -z + x * (5.0 * y + z)`,
+    params: {"alpha":0.9,"beta":9.9,"gamma":1},
+    dt: 0.003,
+    initScale: 10,
+    view: { center: [0, 0, 0], size: [15, 15, 15], rotation: [0, 0, 0] },
+    tex: ["-\\alpha x + y^2 - z^2 + \\alpha \\beta","x (y - 5 z) + \\gamma","-z + x (5 y + z)"],
+  },
+  {
+    name: "Lü-Chen",
+    deriv: `
+    -4.0 * x + z * y,
+    -10.0 * y + z * x,
+    (10.0 * 4.0 * z) / 14.0 - y * x + 18.1`,
+    dt: 0.005,
+    view: { center: [0, 0, 5], size: [20, 20, 20], rotation: [-1.5707963268, 1.5707963268, 0] },
+    tex: ["-4 x + z y","-10 y + z x","\\frac{20}{7} z - y x + 18.1"],
+  },
+  {
+    name: "Newton-Leipnik",
+    deriv: `
+    0.4 * x + y + 10.0 * y * z,
+    -x - 0.4 * y + 5.0 * x * z,
+    0.175 * z - 5.0 * x * y`,
+    dt: 0.0001,
+    initScale: 100,
+    view: { center: [0, 0, 0], size: [80, 80, 80], rotation: [0, 0, 0] },
+    tex: ["0.4 x + y + 10 y z","-x - 0.4 y + 5 x z","0.175 z - 5 x y"],
+    refs: [{"title":"Double strange attractors in rigid body motion with linear feedback control","authors":["R. B. Leipnik","T. A. Newton"],"url":"https://www.semanticscholar.org/paper/Double-strange-attractors-in-rigid-body-motion-with-Leipnik-Newton/a24b76a848c5ba87901d9d03945c180dd2c88939","deets":"Phys Lett A, Vol. 86 (1981), pp. 63–7."}],
+  },
+  {
+    name: "Nosé-Hoover",
+    deriv: `
+    y,
+    -x + y * z,
+    1.5 - y * y`,
+    dt: 0.02,
+    view: { center: [0, 0, 0], size: [5, 5, 5], rotation: [1.5707963268, 0, 0] },
+    tex: ["y","-x + y z","1.5 - y^2"],
+    refs: [{"title":"1986 The Nosé-Hoover System (Sprott A System)","authors":["Christophe Letellier"],"url":"http://www.atomosyd.net/spip.php?article193"}],
+  },
+  {
+    name: "Qi-Chen",
+    deriv: `
+    alpha * (y - x) + y * z,
+    beta * x + y - x * z,
+    x * y - gamma * z`,
+    params: {"alpha":38,"beta":80,"gamma":2.6666666666666665},
+    dt: 0.0015,
+    initOrigin: [0, 0, 75],
+    view: { center: [0, 0, 80], size: [50, 50, 50], rotation: [1.5707963268, 0, 0] },
+    tex: ["38 (y - x) + y z","80 x + y - x z","x y - \\frac{8}{3}z"],
+  },
+  {
+    name: "Rabinovich-Fabrikant",
+    deriv: `
+    y * (z - 1.0 + x * x) + a * x,
+    x * (3.0 * z + 1.0 - x * x) + a * y,
+    -2.0 * z * (b + x * y)`,
+    params: {"a":0.1,"b":0.2875},
+    dt: 0.03,
+    initScale: 1,
+    initOrigin: [0.1, 0.1, 1.1],
+    view: { center: [0, 0, 0.7], size: [2, 2, 1], rotation: [1.5707963268, 0, 0] },
+    refs: [{"title":"Hidden Strange Nonchaotic Attractors","authors":["M. F. Danca","N. Kuznetsov"],"url":"https://www.mdpi.com/2227-7390/9/6/652","deets":"Mathematics 2021, 9(6), 652."}],
+  },
+  {
+    name: "Rayleigh-Benard",
+    deriv: `
+    -9.0 * x + 9.0 * y,
+    12.0 * x - y - x * z,
+    x * y - 0.5 * z`,
+    dt: 0.02,
+    initScale: 2,
+    initOrigin: [0, 0, 10],
+    view: { center: [0, 0, 10], size: [9, 9, 9], rotation: [1.5707963268, 0, 0] },
+    tex: ["-9 x + 9 y","12 x - y - x z","x y - 0.5 z"],
+  },
+  {
+    name: "Rössler",
+    deriv: `
+    -z - y,
+    x + 0.1 * y,
+    0.1 + z * (x - 14.0)`,
+    dt: 0.02,
+    initScale: 14,
+    initOrigin: [0, 0, 0.1],
+    view: { center: [0, 0, 15], size: [20, 20, 25], rotation: [1.5707963268, 0, 0] },
+    tex: ["-z - y","x + 0.1 y","0.1 + z (x - 14)"],
+  },
+  {
+    name: "Rucklidge",
+    deriv: `
+    -2.0 * x + alpha * y - y * z,
+    x,
+    -z + y * y`,
+    params: {"alpha":6.7},
+    dt: 0.02,
+    initScale: 5,
+    view: { center: [0, 0, 8], size: [9, 9, 9], rotation: [1.5707963268, 0, 0] },
+    tex: ["-2 x + \\alpha y - y z","x","-z + y^2"],
+  },
+  {
+    name: "Sakarya",
+    deriv: `
+    -x + y + y * z,
+    -x - y + 0.4 * x * z,
+    z - 0.3 * x * y`,
+    dt: 0.003,
+    initScale: 50,
+    view: { center: [0, 0, 0], size: [40, 40, 40], rotation: [1.5707963268, 0, 0] },
+    tex: ["-x + y + y z","-x - y + 0.4 x z","z - 0.3 x y"],
+  },
+  {
+    name: "Thomas",
+    deriv: `
+    -alpha * x + sin(y),
+    -alpha * y + sin(z),
+    -alpha * z + sin(x)`,
+    params: {"alpha":0.19},
+    dt: 0.1,
+    view: { center: [0, 0, 0], size: [4.5, 4.5, 4.5], rotation: [1.5707963268, 0, 0] },
+    tex: ["-\\alpha x + \\sin(y)","-\\alpha  y + \\sin(z)","-\\alpha  z + \\sin(x)"],
+    refs: [{"title":"Deterministic Chaos Seen in Terms of Feedback Circuit: Analysis, Synthesis, 'Labyrinth Chaos'","authors":["R. Thomas"],"url":"https://www.worldscientific.com/doi/abs/10.1142/S0218127499001383","deets":"International Journal of Bifurcation and Chaos, Vol. 09, No. 10, pp. 1889-1905 (1999)."},{"title":"Wikipedia: Thomas' cyclically symmetric attractor","url":"https://en.wikipedia.org/wiki/Thomas%27_cyclically_symmetric_attractor"}],
+  },
+  {
+    name: "TSUCS1",
+    deriv: `
+    40.0 * (y - x) + 0.5 * x * z,
+    20.0 * y - x * z,
+    0.833 * z + x * y - 0.65 * x * x`,
+    dt: 0.003,
+    initScale: 20,
+    view: { center: [0, 0, 40], size: [60, 60, 60], rotation: [1.5707963268, 0, 0] },
+    tex: ["40 (y - x) + 0.5 x z","20 y - x z","0.833 z + x y - 0.65 x^2"],
+    refs: [{"title":"A three-scroll chaotic attractor","authors":["D. Li"],"url":"https://www.semanticscholar.org/paper/A-three-scroll-chaotic-attractor-Li/dbeb673b0a2542d75e26a18a095672f917176398","deets":"Physics Letters A, Volume 372, Issue 4, 21 January 2008, Pages 387-393."}],
+  },
+  {
+    name: "TSUCS2",
+    deriv: `
+    40.0 * (y - x) + 0.16 * x * z,
+    55.0 * x - x * z + 20.0 * y,
+    1.833 * z + x * y - 0.65 * x * x`,
+    dt: 0.0015,
+    initScale: 80,
+    view: { center: [0, 0, 100], size: [150, 150, 150], rotation: [1.5707963268, 0, 0] },
+    tex: ["40 (y - x) + 0.16 x z","55 x - x z + 20 y","1.833 z + x y - 0.65 x^2"],
+    refs: [{"title":"A three-scroll chaotic attractor","authors":["D. Li"],"url":"https://www.semanticscholar.org/paper/A-three-scroll-chaotic-attractor-Li/dbeb673b0a2542d75e26a18a095672f917176398","deets":"Physics Letters A, Volume 372, Issue 4, 21 January 2008, Pages 387-393."}],
+  },
+  {
+    name: "Wang-Sun",
+    deriv: `
+    x * 0.2 + y * z,
+    -0.01 * x + -0.4 * y - x * z,
+    -z - x * y`,
+    dt: 0.04,
+    initScale: 2,
+    view: { center: [0, 0, 0], size: [2, 2, 2], rotation: [1.5707963268, 0, 0] },
+    tex: ["0.2 x + y z","-0.01 x + -0.4 y - x z","-z - x y"],
+  },
+  {
+    name: "Yu-Wang",
+    deriv: `
+    10.0 * (y - x),
+    40.0 * x - 2.0 * x * z,
+    exp(x * y) - 2.5 * z`,
+    dt: 0.003,
+    initScale: 2,
+    initOrigin: [0, 0, 30],
+    view: { center: [0, 0, 30], size: [5, 5, 30], rotation: [1.5707963268, 0, 0] },
+    tex: ["10 (y - x)","40 x - 2 x z","e^{x y} - 2.5 z"],
+  },
+  {
+    name: "Genus-5 Multispiral",
+    deriv: `
+    alpha * (y - x - (
+    abs(x) < s0
+    ? m0 * x + sign(x) * xi0
+    : abs(x) < s1
+    ? m1 * x + sign(x) * (m0 - m1) * s0
+    : m2 * x + sign(x) * ((m1 - m2) * s1 + (m0 - m1) * s0)
+    )),
+    x - y + z,
+    -beta * y - gamma * z`,
+    params: {"alpha":14.6,"beta":12,"gamma":0.9,"s0":1,"s1":3,"m0":-0.7142857142857143,"m1":-1.1428571428571428,"m2":-0.7,"xi0":0},
+    dt: 0.02,
+    initScale: 1,
+    initOrigin: [0, 0, 0],
+    view: { center: [0, 0, 0], size: [5.5, 5.5, 5.5], rotation: [1.5707963268, 0, 0] },
+    tex: ["-","-","-"],
+    refs: [{"title":"1999 A Genus-5 Multispiral Attractor","authors":["Christophe Letellier"],"url":"http://www.atomosyd.net/spip.php?article137"},{"title":"Differential equations with multispiral attractors","authors":["M. A. Aziz-Alaoui"],"url":"https://www.worldscientific.com/doi/10.1142/S0218127499000729","deets":"International Journal of Bifurcation & Chaos, 9, 1009-1039, 1999."}],
+  },
+  {
+    name: "A Semi-Conductor Laser",
+    deriv: `
+    0.5 * x * z + (w - alpha * z * 0.5) * y + K,
+    -(w - alpha * z * 0.5) * x + y * z * 0.5,
+    -2.0 * Gamma * z - (1.0 + 2.0 * B * z) * (x * x + y * y - 1.0)`,
+    params: {"K":0.3,"w":0,"alpha":8,"B":0.015,"Gamma":0.035},
+    dt: 0.012,
+    initScale: 1,
+    initOrigin: [0, 0, 0],
+    view: { center: [0, 0, 0], size: [3, 3, 3], rotation: [1.5707963268, 0, 0] },
+    tex: ["-","-","-"],
+    refs: [{"title":"1999 A Semi-Conductor Laser Driven by a Light Beam","authors":["Christophe Letellier"],"url":"http://www.atomosyd.net/spip.php?article129"},{"title":"A unifying view of bifurcations in a semiconductor laser subject to optical injection","authors":["S.Wieczorek","B. Krauskopf","D. Lenstra"],"url":"https://research-information.bris.ac.uk/en/publications/a-unifying-view-of-bifurcations-in-a-semiconductor-laser-subject-","deets":"Optics Communications, 172, 279295, 1999."}],
+  },
+  {
+    name: "Multi-folded Toroidal",
+    deriv: `
+    y,
+    (lambda + z + x * x * (1.0 - 0.5 * x * x)) * y - (w0 * w0) * x,
+    mu - x * x`,
+    params: {"lambda":0,"w0":2.7,"mu":0.3},
+    dt: 0.015,
+    initScale: 1,
+    initOrigin: [0, 0, 0],
+    view: { center: [0, 0, 0], size: [4, 4, 2], rotation: [1.5707963268, 0, 0] },
+    tex: ["-","-","-"],
+    refs: [{"title":"2010 Multi-Folded Toroidal Chaos","authors":["Christophe Letellier"],"url":"http://www.atomosyd.net/spip.php?article220"},{"title":"A simple autonomous quasiperiodic self-oscillator","authors":["A. P. Kuznetsov","S. P. Kuznetsov","N. V. Stankevich"],"url":"https://www.researchgate.net/publication/222396257_A_simple_autonomous_quasiperiodic_self-oscillator","deets":"Communications in Nonlinear Science and Numerical Simulation, 15 (6), 1676-1681, 2010."}],
+  },
+  {
+    name: "Unimodal Toroidal",
+    deriv: `
+    z * (lambda * x - mu * y) + (2.0 - z) * (alpha * x * (1.0 - (x * x + y * y) / (R * R)) - beta * y),
+    z * (mu * x + lambda * y) + (2.0 - z) * (alpha * y * (1.0 - (x * x + y * y) / (R * R)) + beta * x),
+    1.0 / eps * (z * ((2.0 - z) * (a * (z - 2.0) * (z - 2.0) + b) - d * x) * (z + m * (x * x + y * y) - eta) - eps * c * (z - 1.0))`,
+    params: {"alpha":2.8,"eps":0.1,"a":3,"b":0.8,"c":1,"d":0.1,"m":0.05,"eta":3.312,"R":10,"beta":5,"lambda":-2,"mu":1},
+    dt: 0.002,
+    initScale: 1,
+    initOrigin: [0, 0, 1],
+    view: { center: [0, 0, 2], size: [8, 8, 4], rotation: [1.5707963268, 0, 0] },
+    tex: ["-","-","-"],
+    refs: [{"title":"Constructing homoclinic orbits and chaotic attractors","authors":["Bo Deng"],"url":"https://www.worldscientific.com/doi/abs/10.1142/S0218127494000599","deets":"International Journal of Bifurcation & Chaos, 4, 823-841, 1994."},{"title":"1994 Unimodal Toroidal Chaos","authors":["Christophe Letellier"],"url":"http://www.atomosyd.net/spip.php?article67"}],
+  },
+  {
+    name: "Cord Attractor",
+    deriv: `
+    -y - z + 0.25 * (8.0 - x),
+    (x - 1.0) * y - 4.0 * x * z + 1.0,
+    4.0 * x * y + (x - 1.0) * z`,
+    dt: 0.01,
+    initScale: 10,
+    initOrigin: [0, 0, 0],
+    view: { center: [0, 0, 2], size: [10, 40, 40], rotation: [1.5707963268, 1.5707963268, 0] },
+    tex: ["-","-","-"],
+    refs: [{"title":"2012 The \"Cord\" Attractor","authors":["Christophe Letellier"],"url":"http://www.atomosyd.net/spip.php?article185"}],
+  },
+  {
+    name: "Torn Unimodal Chaos",
+    deriv: `
+    33.0 * x + 150.0 * y - 1.0 * x * y - (3.5 * z + 4815.0) * x / (x + 0.01),
+    410.0 + 0.59 * z - 4.0 * y - 2.5 * x * y / (y + 0.01),
+    2.5 + 5.29 * x * z - 750.0 * z`,
+    dt: 0.002,
+    initScale: 10,
+    initOrigin: [125, 25, 0],
+    view: { center: [140, 20, 170], size: [20, 10, 200], rotation: [1.5707963268, 0, 0] },
+    tex: ["33.0 * x + 150.0 * y - 1.0 * x * y - (3.5 * z + 4815.0) * x / (x + 0.01)","410.0 + 0.59 * z - 4.0 * y - 2.5 * x * y / (y + 0.01)","2.5 + 5.29 * x * z - 750.0 * z"],
+    refs: [{"title":"Strange attractors in 3-variable reaction systems","authors":["O. E. Rössler","P. J. Ortoleva"],"deets":"Lecture Notes in Biomathematics, 21, 67-73, 1978."},{"title":"1978 Torn Unimodal Chaos","authors":["Christohpe Letellier"],"url":"http://www.atomosyd.net/spip.php?article65"}],
+  },
+  {
+    name: "Lorenz 1984",
+    deriv: `
+    -y * y - z * z + alpha * (beta - x),
+    x * y - 4.0 * x * z - y + 1.0,
+    4.0 * x * y + x * z - z`,
+    params: {"alpha":0.25,"beta":8},
+    dt: 0.01,
+    initScale: 1,
+    initOrigin: [0, 0, 0],
+    view: { center: [1, 0, 0], size: [2.8, 2.8, 2.8], rotation: [0, 0, -1.5707963268] },
+    tex: ["-y^2 - z^2 + \\alpha (\\beta - x)","x y - 4 x z - y + 1","4 x y + x z - z"],
+    refs: [{"title":"Irregularity: a fundamental property of the atmosphere","url":"https://onlinelibrary.wiley.com/doi/10.1111/j.1600-0870.1984.tb00230.x","deets":"Tellus A, 36, 98-110, 1984."},{"title":"1984 A 3D Model for Global Atmospheric Circulation","authors":["Christophe Letellier"],"url":"http://www.atomosyd.net/spip.php?article42"}],
+  },
+];
+
+const byName = name => ATTRACTORS.find(a => a.name === name);
+
+Object.assign(__exports, { ATTRACTORS, byName });
+
+});
+
+__def("palettes.js", function (__exports, __req) {
+// Colour schemes. `color1` → `color2` is the gradient across trajectories;
+// `border` is the ink that separates overlapping strands.
+
+const { hexToRgb } = __req('glutil.js');
+
+const raw = [
+  // --- dark ---------------------------------------------------------------
+  { name: 'Ink',        dark: true, bg: '#07090e', c1: '#2f6ad0', c2: '#8de2a7', border: '#02030a', grid: '#5f7fb8' },
+  { name: 'Ember',      dark: true, bg: '#0b0605', c1: '#a8204c', c2: '#ffb347', border: '#1a0503', grid: '#a8674a' },
+  { name: 'Viridian',   dark: true, bg: '#05100d', c1: '#12786f', c2: '#c8f169', border: '#01100c', grid: '#4fae8f' },
+  { name: 'Magenta Ice',dark: true, bg: '#0a0713', c1: '#6c2ecb', c2: '#ff85d8', border: '#05020d', grid: '#8a6bc9' },
+  { name: 'Copper',     dark: true, bg: '#0d0a07', c1: '#7d4520', c2: '#f0a868', border: '#170d05', grid: '#9c7550' },
+  { name: 'Cyanotype',  dark: true, bg: '#04101c', c1: '#1566ba', c2: '#9ee8ff', border: '#010a14', grid: '#4d8fc4' },
+  { name: 'Sodium',     dark: true, bg: '#0c0a04', c1: '#a8760a', c2: '#ffe9a8', border: '#150f02', grid: '#a08f55' },
+  { name: 'Absinthe',   dark: true, bg: '#080d06', c1: '#4c860e', c2: '#e8ff7a', border: '#040802', grid: '#7fa84f' },
+  { name: 'Deep Sea',   dark: true, bg: '#03080f', c1: '#12568f', c2: '#46d5c8', border: '#01050b', grid: '#3d7d9c' },
+  { name: 'Ultraviolet',dark: true, bg: '#07040f', c1: '#4a32d8', c2: '#c4a7ff', border: '#030109', grid: '#7060c0' },
+  { name: 'Rust Bloom', dark: true, bg: '#0f0709', c1: '#c04a2c', c2: '#ffd9a0', border: '#1c0806', grid: '#b0705e' },
+  { name: 'Aurora',     dark: true, bg: '#040a0c', c1: '#1a7ba6', c2: '#a7ffcf', border: '#010607', grid: '#48a0a8' },
+  // --- paper --------------------------------------------------------------
+  { name: 'Notebook',   dark: false, bg: '#ffffff', c1: '#2f6ad0', c2: '#8de2a7', border: '#492727', grid: '#000000' },
+  { name: 'Blueprint',  dark: false, bg: '#eef3fa', c1: '#123a73', c2: '#5fb0d8', border: '#12243d', grid: '#20406b' },
+  { name: 'Risograph',  dark: false, bg: '#f7f1e6', c1: '#d0245c', c2: '#2a4fc4', border: '#3a2018', grid: '#6b5a48' }
+];
+
+function mix(a, b, t) { return a.map((v, i) => v + (b[i] - v) * t); }
+
+const PALETTES = raw.map(p => {
+  const background = hexToRgb(p.bg);
+  const color1 = hexToRgb(p.c1);
+  const color2 = hexToRgb(p.c2);
+  return {
+    name: p.name,
+    dark: p.dark,
+    background,
+    color1,
+    color2,
+    borderColor: hexToRgb(p.border),
+    gridColor: hexToRgb(p.grid),
+    gridOpacity: p.dark ? 0.32 : 0.25,
+    // On dark grounds a literal shadow is invisible, so the floor catches a
+    // dim tint of the trails instead.
+    shadowColor: p.dark ? mix(background, color1, 0.42) : mix(background, [0, 0, 0], 0.09),
+    css: {
+      background: p.bg,
+      foreground: p.dark ? '#e8edf5' : '#1a1a1a',
+      accent: p.c2
+    }
+  };
+});
+
+const pick = (rng = Math.random, filter = () => true) => {
+  const pool = PALETTES.filter(filter);
+  return pool[Math.floor(rng() * pool.length)];
+};
+
+Object.assign(__exports, { PALETTES, pick });
+
+});
+
+__def("format.js", function (__exports, __req) {
+// Turns the GLSL derivative source into something readable under the title.
+
+function splitComponents(deriv) {
+  const parts = [];
+  let depth = 0, current = '';
+  for (const ch of deriv) {
+    if (ch === '(') depth++;
+    else if (ch === ')') depth--;
+    if (ch === ',' && depth === 0) { parts.push(current); current = ''; continue; }
+    current += ch;
+  }
+  parts.push(current);
+  return parts.map(p => p.replace(/\s+/g, ' ').trim()).filter(Boolean);
+}
+
+const SUPER = { 2: '²', 3: '³' };
+
+const GREEK = {
+  alpha: 'α', beta: 'β', gamma: 'γ', delta: 'δ', epsilon: 'ε', zeta: 'ζ',
+  eta: 'η', theta: 'θ', iota: 'ι', kappa: 'κ', lambda: 'λ', mu: 'μ', nu: 'ν',
+  xi: 'ξ', rho: 'ρ', sigma: 'σ', tau: 'τ', upsilon: 'υ', phi: 'φ', chi: 'χ',
+  psi: 'ψ', omega: 'ω'
+};
+
+const GREEK_RE = new RegExp(`\\b(${Object.keys(GREEK).join('|')})\\b`, 'g');
+
+const greek = s => s.replace(GREEK_RE, m => GREEK[m]);
+
+// Four significant figures is plenty; 2.6666666666666665 is not a parameter.
+const shortNumber = v => {
+  if (!Number.isFinite(v)) return String(v);
+  if (Number.isInteger(v)) return String(v);
+  return String(Number(v.toPrecision(4)));
+};
+
+function prettyExpression(src) {
+  let s = ' ' + src + ' ';
+  // Collapse repeated self-products into exponents, longest run first.
+  for (const v of ['x', 'y', 'z']) {
+    for (const n of [4, 3, 2]) {
+      const run = new RegExp(`\\b${v}(?:\\s*\\*\\s*${v}){${n - 1}}\\b`, 'g');
+      s = s.replace(run, v + (SUPER[n] || `^${n}`));
+    }
+  }
+  s = s.replace(/\s*\*\s*/g, ' ');
+  s = s.replace(/\s*\/\s*/g, ' / ');
+  s = s.replace(/\bpow\b/g, 'pow');
+  s = s.replace(/(\d)\.0\b/g, '$1');
+  s = s.replace(/\b1 (?=[a-zA-Zα-ω(])/g, '');
+  s = s.replace(/\s+/g, ' ').trim();
+  return greek(s);
+}
+
+function equations(attractor) {
+  const dots = ['ẋ', 'ẏ', 'ż'];
+  return splitComponents(attractor.deriv).slice(0, 3)
+    .map((part, i) => `${dots[i]} = ${prettyExpression(part)}`);
+}
+
+function parameterLine(attractor) {
+  if (!attractor.params) return '';
+  return Object.entries(attractor.params)
+    .map(([k, v]) => `${greek(k)} = ${shortNumber(v)}`)
+    .join('   ');
+}
+
+function reference(attractor) {
+  const r = attractor.refs && attractor.refs[0];
+  if (!r) return '';
+  const who = r.authors ? r.authors.join(', ') + ' · ' : '';
+  return who + (r.title || '');
+}
+
+Object.assign(__exports, { splitComponents, greek, shortNumber, prettyExpression, equations, parameterLine, reference });
+
+});
+
+__req('main.js').boot().catch(err => {
+  const el = document.getElementById('error');
+  el.textContent = String(err && err.stack || err);
+  el.classList.add('show');
+  console.error(err);
+});
+})();
+</script>
+</body>
+</html>

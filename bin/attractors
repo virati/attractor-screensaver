@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# Launch the attractor screensaver in a kiosk browser window.
+#
+#   attractors            # interactive window (arrow keys, drag to orbit)
+#   attractors --idle     # screensaver mode: no cursor, any input dismisses it
+#   attractors --windowed # normal browser window instead of fullscreen kiosk
+#
+# Anything else you pass is appended to the page's query string, e.g.
+#   attractors --idle duration=30 theme=dark particles=2048
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+QUERY=()
+KIOSK=1
+
+for arg in "$@"; do
+  case "$arg" in
+    --idle|-i)      QUERY+=("idle=1") ;;
+    --windowed|-w)  KIOSK=0 ;;
+    --help|-h)      sed -n '2,12p' "$0" | sed 's/^# \?//'; exit 0 ;;
+    -*)             echo "unknown option: $arg" >&2; exit 2 ;;
+    *)              QUERY+=("$arg") ;;
+  esac
+done
+
+PY_BIN="${PYTHON:-python3}"
+command -v "$PY_BIN" >/dev/null || { echo "python3 is required" >&2; exit 1; }
+
+# --- static server -----------------------------------------------------------
+SERVER_OUT="$(mktemp)"
+"$PY_BIN" "$ROOT/bin/serve.py" "$ROOT" > "$SERVER_OUT" &
+SERVER_PID=$!
+
+cleanup() {
+  [[ -n "${BROWSER_PID:-}" ]] && kill "$BROWSER_PID" 2>/dev/null || true
+  kill "$SERVER_PID" 2>/dev/null || true
+  rm -f "$SERVER_OUT"
+  [[ -n "${PROFILE_DIR:-}" ]] && rm -rf "$PROFILE_DIR" || true
+}
+trap cleanup EXIT INT TERM
+
+PORT=""
+for _ in $(seq 1 100); do
+  PORT="$(sed -n 's/^PORT=//p' "$SERVER_OUT" | head -1)"
+  [[ -n "$PORT" ]] && break
+  sleep 0.05
+done
+[[ -n "$PORT" ]] || { echo "server failed to start" >&2; exit 1; }
+
+URL="http://127.0.0.1:${PORT}/index.html"
+if [[ ${#QUERY[@]} -gt 0 ]]; then
+  URL="${URL}?$(IFS='&'; echo "${QUERY[*]}")"
+fi
+
+# --- browser -----------------------------------------------------------------
+find_browser() {
+  if [[ -n "${ATTRACTORS_BROWSER:-}" ]]; then echo "$ATTRACTORS_BROWSER"; return; fi
+  for b in chromium chromium-browser google-chrome google-chrome-stable brave-browser vivaldi-stable microsoft-edge; do
+    command -v "$b" >/dev/null && { echo "$b"; return; }
+  done
+  if command -v flatpak >/dev/null; then
+    for id in com.google.Chrome org.chromium.Chromium com.brave.Browser com.microsoft.Edge; do
+      flatpak info "$id" >/dev/null 2>&1 && { echo "flatpak:$id"; return; }
+    done
+  fi
+  for b in firefox; do command -v "$b" >/dev/null && { echo "$b"; return; }; done
+  if command -v flatpak >/dev/null && flatpak info org.mozilla.firefox >/dev/null 2>&1; then
+    echo "flatpak:org.mozilla.firefox"; return
+  fi
+  echo ""
+}
+
+BROWSER="$(find_browser)"
+[[ -n "$BROWSER" ]] || { echo "no supported browser found (set ATTRACTORS_BROWSER)" >&2; exit 1; }
+
+PROFILE_DIR="$(mktemp -d -t attractors-profile-XXXXXX)"
+
+chromium_args=(
+  "--app=$URL"
+  "--user-data-dir=$PROFILE_DIR"
+  --no-first-run
+  --no-default-browser-check
+  --disable-session-crashed-bubble
+  --disable-features=Translate,InfiniteSessionRestore
+  --hide-scrollbars
+  --ozone-platform-hint=auto
+  --enable-features=VaapiVideoDecoder
+)
+[[ $KIOSK -eq 1 ]] && chromium_args+=(--kiosk --start-fullscreen)
+
+case "$BROWSER" in
+  flatpak:org.mozilla.firefox)
+    flatpak run org.mozilla.firefox --new-window "$URL" & BROWSER_PID=$! ;;
+  firefox)
+    firefox --new-window "$URL" & BROWSER_PID=$! ;;
+  flatpak:*)
+    flatpak run "${BROWSER#flatpak:}" "${chromium_args[@]}" & BROWSER_PID=$! ;;
+  *)
+    "$BROWSER" "${chromium_args[@]}" & BROWSER_PID=$! ;;
+esac
+
+# Whichever goes first ends the session: the page asking to quit, or the window
+# being closed by hand.
+while kill -0 "$SERVER_PID" 2>/dev/null && kill -0 "$BROWSER_PID" 2>/dev/null; do
+  sleep 0.4
+done

@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Strange Attractors</title>
+<style>
+  :root {
+    --bg: #07090e;
+    --fg: #e8edf5;
+    --accent: #8de2a7;
+    --hud: 0;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%; width: 100%;
+    background: var(--bg);
+    color: var(--fg);
+    overflow: hidden;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    transition: background-color 400ms linear;
+  }
+  body.idle { cursor: none; }
+  canvas {
+    display: block;
+    width: 100%; height: 100%;
+    touch-action: none;
+  }
+
+  #hud {
+    position: fixed;
+    left: max(24px, env(safe-area-inset-left));
+    bottom: max(22px, env(safe-area-inset-bottom));
+    max-width: min(52ch, calc(100vw - 48px));
+    max-height: 38vh;
+    opacity: var(--hud);
+    transition: opacity 240ms linear;
+    pointer-events: none;
+    text-shadow: 0 1px 12px rgba(0,0,0,.45);
+    line-height: 1.45;
+  }
+  body.paper #hud { text-shadow: 0 1px 10px rgba(255,255,255,.7); }
+  #hud.hidden { opacity: 0 !important; }
+
+  #name {
+    font-size: 1.45rem;
+    font-weight: 600;
+    letter-spacing: -0.012em;
+    margin: 0 0 .45rem;
+  }
+  #eq {
+    font-family: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+    font-size: .8rem;
+    white-space: pre-wrap;
+    opacity: .92;
+    margin: 0 0 .45rem;
+  }
+  #params {
+    font-family: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+    font-size: .74rem;
+    opacity: .7;
+    margin: 0 0 .5rem;
+  }
+  #ref {
+    font-size: .72rem;
+    opacity: .55;
+    font-style: italic;
+    margin: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  #meta {
+    position: fixed;
+    right: max(24px, env(safe-area-inset-right));
+    bottom: max(22px, env(safe-area-inset-bottom));
+    text-align: right;
+    font-size: .68rem;
+    letter-spacing: .09em;
+    text-transform: uppercase;
+    opacity: calc(var(--hud) * .6);
+    transition: opacity 240ms linear;
+    pointer-events: none;
+  }
+  #meta.hidden { opacity: 0 !important; }
+  #meta b { color: var(--accent); font-weight: 600; }
+
+  #help {
+    position: fixed;
+    top: max(22px, env(safe-area-inset-top));
+    right: max(24px, env(safe-area-inset-right));
+    font-size: .68rem;
+    line-height: 1.7;
+    text-align: right;
+    opacity: 0;
+    transition: opacity 240ms linear;
+    pointer-events: none;
+  }
+  #help.show { opacity: .5; }
+  #help kbd {
+    font-family: ui-monospace, Menlo, monospace;
+    border: 1px solid currentColor;
+    border-radius: 3px;
+    padding: 0 .28em;
+    opacity: .85;
+  }
+
+  #error {
+    position: fixed; inset: 0;
+    display: none;
+    place-content: center;
+    padding: 12vw;
+    background: #0b0d12;
+    color: #ffb4a8;
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: .85rem;
+    white-space: pre-wrap;
+    overflow: auto;
+  }
+  #error.show { display: grid; }
+</style>
+</head>
+<body>
+  <canvas id="gl"></canvas>
+
+  <div id="hud">
+    <h1 id="name"></h1>
+    <pre id="eq"></pre>
+    <div id="params"></div>
+    <div id="ref"></div>
+  </div>
+
+  <div id="meta"><span id="counter"></span> · <b id="palette"></b></div>
+
+  <div id="help">
+    <div><kbd>←</kbd> <kbd>→</kbd> previous / next attractor</div>
+    <div><kbd>R</kbd> new colours &amp; camera</div>
+    <div><kbd>space</kbd> hold this one</div>
+    <div><kbd>H</kbd> hide overlay · <kbd>F</kbd> fullscreen</div>
+    <div><kbd>drag</kbd> orbit · <kbd>scroll</kbd> zoom</div>
+  </div>
+
+  <div id="error"></div>
+
+  <script type="module">
+    import { boot } from './src/main.js';
+    boot().catch(err => {
+      const el = document.getElementById('error');
+      el.textContent = String(err && err.stack || err);
+      el.classList.add('show');
+      console.error(err);
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,5 @@
+node_modules/
+notebook.js
+attractors.json
+*.log
+.DS_Store

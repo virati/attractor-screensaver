@@ -1,0 +1,8 @@
+[Unit]
+Description=Strange attractor screensaver
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/Projects/attractor-screensaver/bin/attractors --idle
+Restart=no
