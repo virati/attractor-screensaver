@@ -57,11 +57,15 @@ export function equations(attractor) {
     .map((part, i) => `${dots[i]} = ${prettyExpression(part)}`);
 }
 
-export function parameterLine(attractor) {
-  if (!attractor.params) return '';
-  return Object.entries(attractor.params)
+export function parameterValues(params) {
+  if (!params) return '';
+  return Object.entries(params)
     .map(([k, v]) => `${greek(k)} = ${shortNumber(v)}`)
     .join('   ');
+}
+
+export function parameterLine(attractor) {
+  return parameterValues(attractor.params);
 }
 
 export function reference(attractor) {

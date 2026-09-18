@@ -6,6 +6,10 @@ one after another as a screensaver. A direct port of Ricky Reusser's
 — same systems, same parameters, same Runge–Kutta-on-a-texture trick — rebuilt as
 a dependency-free WebGL2 page with a director that keeps it interesting for hours.
 
+Each system holds the screen for five minutes, with a panel in the top right
+that says where it came from and what it was built to describe, creeping upward
+at reading pace.
+
 ![Halvorsen](preview/halvorsen.jpg)
 ![Lorenz](preview/lorenz.jpg)
 
@@ -14,6 +18,7 @@ a dependency-free WebGL2 page with a director that keeps it interesting for hour
 ```sh
 bin/attractors              # interactive window
 bin/attractors --idle       # screensaver mode: no cursor, any input dismisses it
+bin/attractors --continuous # parameters drift while each system plays
 ```
 
 The launcher starts a throwaway static server on localhost and opens a kiosk
@@ -56,8 +61,10 @@ Interactive mode only — in `--idle` mode any input dismisses the screensaver.
 | <kbd>R</kbd> | reroll the palette, camera and line style |
 | <kbd>space</kbd> | hold on this one |
 | <kbd>H</kbd> | hide the overlay |
+| <kbd>I</kbd> | hide the history panel on its own |
 | <kbd>F</kbd> | fullscreen |
 | drag / scroll | orbit / zoom |
+| scroll over the panel | read at your own pace; auto-scroll resumes after 12s |
 
 ## Options
 
@@ -69,7 +76,7 @@ bin/attractors --idle duration=30 theme=dark particles=2048
 
 | | default | |
 |---|---|---|
-| `duration` | `45` | seconds per attractor; `0` holds the first one forever |
+| `duration` | `300` | seconds per attractor; `0` holds the first one forever |
 | `fade` | `1.4` | seconds of cross-fade between attractors |
 | `theme` | `any` | `dark`, `paper`, or `any` |
 | `attractor` | — | pin the opening system, e.g. `attractor=Lorenz` |
@@ -78,6 +85,50 @@ bin/attractors --idle duration=30 theme=dark particles=2048
 | `speed` | `1` | integration steps per display frame |
 | `dpr` | `1.75` | device-pixel-ratio ceiling |
 | `hud` | `1` | `0` hides the name and equations |
+| `history` | `1` | `0` hides the history panel |
+| `continuous` | — | drift the parameters instead of holding them fixed |
+| `sweep` | `0.12` | drift amplitude, as a fraction of each published value |
+| `sweepPeriod` | `55` | seconds for the base drift cycle |
+
+## The history panel
+
+The panel in the top right carries two or three paragraphs on the system
+currently on screen: who derived it, what problem it came out of, and what is
+worth knowing about how it behaves. It holds at the top for a few seconds,
+walks up at about one line every two seconds, rests at the end and starts
+again — roughly three passes in a five-minute stint. It scrolls itself because
+in `--idle` mode there is nobody to scroll it: touching the mouse dismisses the
+whole window.
+
+The text lives in [`src/history.js`](src/history.js), keyed by attractor name,
+alongside the sources it was written from. Nine entries carry a `caveat` line,
+shown in italics at the end: these are systems that circulate through
+visualisation tools under names the primary literature does not clearly
+confirm, and the panel says so rather than inventing a citation. Two of them —
+`Lorenz Mod 1` and `Lorenz Mod 2` — have no traceable source paper at all, and
+their notes are drawn from reading the equations.
+
+While the notes were being written it turned out that `Four-wing` and
+`Wang-Sun` are the same system: identical equations, identical parameters,
+entered twice under different names. Both entries say so.
+
+## Continuous mode
+
+`--continuous` stops treating the published parameter values as fixed and lets
+them wander. Each parameter rides the sum of two slow sinusoids centred on its
+published value, with incommensurate periods chosen so the combination never
+repeats, so the shape is always changing and never jumps.
+
+The motion is deliberately confined to about 12% either side of the published
+values. Those values are the ones known to put each system on its attractor;
+ranging further would mostly find the parameter regions where the attractor
+collapses to a fixed point or escapes to infinity. Both sinusoids start at zero
+phase, so the drift begins exactly where the spin-up left off.
+
+Because the attractor changes size as well as shape, the camera re-frames every
+four seconds from a 128-trajectory sample of the trail buffer, slewed in rather
+than snapped. The parameter line under the title becomes a live readout,
+rewritten four times a second.
 | `idle` | off | screensaver behaviour |
 
 Resolution adapts on its own: the renderer watches frame cost and moves up or

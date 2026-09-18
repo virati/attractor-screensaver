@@ -4,7 +4,9 @@ import { createContext } from './glutil.js';
 import { Scene } from './scene.js';
 import { Director } from './director.js';
 import { ATTRACTORS } from './attractors.js';
-import { equations, parameterLine, reference } from './format.js';
+import { Drift } from './drift.js';
+import { HistoryPanel } from './history-panel.js';
+import { equations, parameterLine, parameterValues, reference } from './format.js';
 
 const params = new URLSearchParams(location.search);
 const num = (key, fallback) => {
@@ -15,15 +17,19 @@ const flag = key => params.has(key) && params.get(key) !== '0' && params.get(key
 
 const OPTS = {
   idle: flag('idle'),
-  duration: num('duration', 45),
+  duration: num('duration', 300),
   fadeTime: num('fade', 1.4),
+  continuous: flag('continuous'),
+  sweep: num('sweep', 0.12),
+  sweepPeriod: Math.max(4, num('sweepPeriod', 55)),
   particles: Math.max(64, Math.min(4096, num('particles', 1024))),
   steps: Math.max(8, Math.min(512, num('steps', 180))),
   speed: num('speed', 1),
   theme: params.get('theme') || 'any',
   attractor: params.get('attractor'),
   maxPixelRatio: num('dpr', 1.75),
-  hud: params.get('hud') !== '0'
+  hud: params.get('hud') !== '0',
+  history: params.get('history') !== '0'
 };
 
 const el = id => document.getElementById(id);
@@ -46,11 +52,19 @@ export async function boot() {
 
   const scene = new Scene(gl, LADDER[rung]);
 
+  // --continuous: walk the parameters instead of holding them fixed.
+  const drift = OPTS.continuous
+    ? new Drift({ amplitude: OPTS.sweep, period: OPTS.sweepPeriod })
+    : null;
+
+  const history = OPTS.history ? new HistoryPanel(el('history')) : null;
+
   const director = new Director(scene, {
     duration: OPTS.duration,
     fadeTime: OPTS.fadeTime,
     theme: OPTS.theme,
     pinned: OPTS.attractor,
+    drift,
     quality: () => { rung = pendingRung; return LADDER[rung]; },
     onChange: describe
   });
@@ -67,6 +81,7 @@ export async function boot() {
     el('counter').textContent =
       `${String(dir.index + 1).padStart(2, '0')} / ${ATTRACTORS.length}`;
     el('palette').textContent = style.palette.name;
+    if (history) history.show(attractor);
   }
 
   // --- sizing --------------------------------------------------------------
@@ -91,6 +106,7 @@ export async function boot() {
   let accumulator = 0;
   let smoothDt = 1 / 60;
   let sinceCheck = 0;
+  let sinceReadout = 0;
   let running = true;
 
   function frame(now) {
@@ -116,6 +132,19 @@ export async function boot() {
     scene.camera.update(dt);
     const veil = director.advance(dt);
     scene.render({ veil });
+
+    if (history) history.advance(dt);
+
+    // With the parameters moving, the line under the title is a live readout
+    // rather than a caption, so it has to be rewritten — but four times a
+    // second, not sixty, or the digits are a blur.
+    if (drift && !director.paused) {
+      sinceReadout += dt;
+      if (sinceReadout > 0.25) {
+        sinceReadout = 0;
+        el('params').textContent = parameterValues(scene.sim.params);
+      }
+    }
 
     const hud = OPTS.hud ? Math.max(0, 1 - veil * 1.6) : 0;
     document.documentElement.style.setProperty('--hud', hud.toFixed(3));
@@ -149,10 +178,10 @@ export async function boot() {
     document.body.classList.add('idle');
     armIdleExit();
   } else {
-    armControls(canvas, director, scene);
+    armControls(canvas, director, scene, history);
   }
 
-  return { scene, director };
+  return { scene, director, history, drift };
 }
 
 // Screensaver mode: the first real sign of life dismisses the window.
@@ -179,7 +208,7 @@ function armIdleExit() {
   }
 }
 
-function armControls(canvas, director, scene) {
+function armControls(canvas, director, scene, history) {
   const help = el('help');
   let helpTimer = null;
   const flashHelp = () => {
@@ -198,7 +227,9 @@ function armControls(canvas, director, scene) {
       case 'h': case 'H':
         el('hud').classList.toggle('hidden');
         el('meta').classList.toggle('hidden');
+        el('history').classList.toggle('hidden');
         break;
+      case 'i': case 'I': el('history').classList.toggle('hidden'); break;
       case 'f': case 'F':
         if (document.fullscreenElement) document.exitFullscreen();
         else document.documentElement.requestFullscreen().catch(() => {});
@@ -232,4 +263,13 @@ function armControls(canvas, director, scene) {
     e.preventDefault();
     scene.camera.zoomBy(e.deltaY);
   }, { passive: false });
+
+  // A wheel over the history panel scrolls the text rather than the camera,
+  // and holds the automatic scroll off for a few seconds afterwards.
+  if (history) {
+    el('history').addEventListener('wheel', e => {
+      e.preventDefault();
+      history.nudge(e.deltaY * 0.6);
+    }, { passive: false });
+  }
 }

@@ -7,6 +7,8 @@ import { createContext } from './glutil.js';
 import { Scene } from './scene.js';
 import { Director } from './director.js';
 import { equations, parameterLine, reference } from './format.js';
+import { HISTORY } from './history.js';
+import { Drift } from './drift.js';
 
 export function mount({
   canvas,
@@ -15,6 +17,7 @@ export function mount({
   steps = 160,
   maxPixelRatio = 1.6,
   theme = 'dark',
+  continuous = false,
   onChange = () => {},
   onVeil = () => {}
 }) {
@@ -35,12 +38,17 @@ export function mount({
     duration,
     fadeTime: 1.2,
     theme,
+    drift: continuous ? new Drift() : null,
     quality: () => LADDER[pendingRung],
     onChange: (attractor, style, dir) => onChange({
       name: attractor.name,
       equations: equations(attractor),
       parameters: parameterLine(attractor),
       reference: reference(attractor),
+      // Background notes, for a host page that wants to show them: `origin`,
+      // `text` (2-3 paragraphs), `sources`, and `caveat` where the attribution
+      // is shakier than the rest.
+      history: HISTORY[attractor.name] || null,
       palette: style.palette.name,
       index: dir.index,
       total: dir.playlist.length

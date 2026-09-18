@@ -89,10 +89,9 @@
   #help {
     position: fixed;
     top: max(22px, env(safe-area-inset-top));
-    right: max(24px, env(safe-area-inset-right));
+    left: max(24px, env(safe-area-inset-left));
     font-size: .68rem;
     line-height: 1.7;
-    text-align: right;
     opacity: 0;
     transition: opacity 240ms linear;
     pointer-events: none;
@@ -104,6 +103,73 @@
     border-radius: 3px;
     padding: 0 .28em;
     opacity: .85;
+  }
+
+  #history {
+    --panel-alpha: 1;
+    position: fixed;
+    top: max(22px, env(safe-area-inset-top));
+    right: max(24px, env(safe-area-inset-right));
+    width: min(44ch, 34vw);
+    opacity: calc(var(--hud) * var(--panel-alpha));
+    transition: opacity 240ms linear;
+    pointer-events: none;
+    text-shadow: 0 1px 12px rgba(0,0,0,.5);
+  }
+  body.paper #history { text-shadow: 0 1px 10px rgba(255,255,255,.75); }
+  body:not(.idle) #history { pointer-events: auto; }
+  #history.hidden, #history.empty { opacity: 0 !important; }
+
+  /* The heading stays put; only the text below it moves, which is why the
+     mask lives on the viewport rather than on the panel as a whole. */
+  #history-head {
+    font-size: .62rem;
+    letter-spacing: .13em;
+    text-transform: uppercase;
+    text-align: right;
+    opacity: .45;
+    margin-bottom: .7rem;
+  }
+
+  #history-view {
+    height: min(52vh, 480px);
+    overflow: hidden;
+    /* The text is meant to drift out of sight rather than be cut off, so both
+       ends of the viewport dissolve into the background. */
+    -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 12px, #000 calc(100% - 56px), transparent 100%);
+    mask-image: linear-gradient(to bottom, transparent 0, #000 12px, #000 calc(100% - 56px), transparent 100%);
+  }
+
+  #history-track {
+    /* Clears the top of the fade, so the first line is not dimmed at rest. */
+    padding-top: 14px;
+    text-align: right;
+    will-change: transform;
+  }
+  #history-origin {
+    font-size: .74rem;
+    font-weight: 600;
+    color: var(--accent);
+    margin-bottom: .55rem;
+  }
+  #history-body p {
+    font-size: .765rem;
+    line-height: 1.62;
+    margin: 0 0 .8rem;
+    opacity: .96;
+    text-wrap: pretty;
+  }
+  #history-body p.caveat { font-style: italic; opacity: .66; }
+  #history-body p.sources {
+    font-size: .64rem;
+    letter-spacing: .04em;
+    opacity: .5;
+    margin-bottom: 3.5rem;
+  }
+
+  /* Below this width the panel would cover the subject, so it stands down. */
+  @media (max-width: 900px), (max-height: 520px) {
+    #history { display: none; }
   }
 
   #error {
@@ -133,11 +199,22 @@
 
   <div id="meta"><span id="counter"></span> · <b id="palette"></b></div>
 
+  <aside id="history">
+    <div id="history-head">History and details</div>
+    <div id="history-view">
+      <div id="history-track">
+        <div id="history-origin"></div>
+        <div id="history-body"></div>
+      </div>
+    </div>
+  </aside>
+
   <div id="help">
     <div><kbd>←</kbd> <kbd>→</kbd> previous / next attractor</div>
     <div><kbd>R</kbd> new colours &amp; camera</div>
     <div><kbd>space</kbd> hold this one</div>
     <div><kbd>H</kbd> hide overlay · <kbd>F</kbd> fullscreen</div>
+    <div><kbd>I</kbd> history panel · <kbd>scroll</kbd> over it to read</div>
     <div><kbd>drag</kbd> orbit · <kbd>scroll</kbd> zoom</div>
   </div>
 

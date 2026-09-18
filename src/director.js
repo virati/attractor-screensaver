@@ -59,6 +59,7 @@ export class Director {
     theme = 'any',
     pinned = null,
     quality = null,
+    drift = null,
     onChange = () => {}
   } = {}) {
     this.scene = scene;
@@ -67,8 +68,11 @@ export class Director {
     this.rng = rng;
     this.theme = theme;
     this.quality = quality;
+    this.drift = drift;
     this.onChange = onChange;
     this.paused = false;
+    this.margin = 1.35;
+    this.sinceReframe = 0;
 
     const start = pinned ? byName(pinned) : null;
     this.playlist = shuffle(ATTRACTORS, rng);
@@ -131,7 +135,8 @@ export class Director {
 
     const { radius, bottom } = occupancy(
       this.scene.sim.readPositions(), style.transform, this.scene.camera.target);
-    this.scene.camera.frameRadius(radius, lerp(1.22, 1.55, this.rng()));
+    this.margin = lerp(1.22, 1.55, this.rng());
+    this.scene.camera.frameRadius(radius, this.margin);
 
     // Keep the floor just under the subject and grow the room to match, so a
     // sprawling system gets a hall and a compact one gets a room.
@@ -139,7 +144,31 @@ export class Director {
     style.roomHalf = Math.max(2, radius * 2.2);
 
     this.held = 0;
+    this.sinceReframe = 0;
+    if (this.drift) this.drift.reset(attractor);
     this.onChange(attractor, style, this);
+  }
+
+  // Drifting parameters change the size of the attractor as well as its shape,
+  // so the framing has to follow. The correction is slewed in over seconds
+  // rather than applied outright: a camera that snapped to each new radius
+  // would read as a jolt, which is exactly what --continuous mode is avoiding.
+  reframe(blend) {
+    const style = this.scene.style;
+    const camera = this.scene.camera;
+    if (!style || camera.drag) return;
+
+    const { radius, bottom } = occupancy(
+      this.scene.sim.readPositions(128), style.transform, camera.target);
+    if (!(radius > 0)) return;
+
+    const before = camera.distance;
+    camera.frameRadius(radius, this.margin);
+    camera.distance = lerp(before, camera.distance, blend);
+
+    const floor = Math.min(-0.5, bottom - 0.08 * radius);
+    style.floorY = lerp(style.floorY, floor, blend);
+    style.roomHalf = lerp(style.roomHalf, Math.max(2, radius * 2.2), blend);
   }
 
   cut(index) {
@@ -164,6 +193,14 @@ export class Director {
   }
 
   advance(dt) {
+    if (this.drift && !this.paused) {
+      this.drift.advance(dt, this.scene.sim);
+      this.sinceReframe += dt;
+      if (this.sinceReframe >= 4) {
+        this.sinceReframe = 0;
+        this.reframe(0.5);
+      }
+    }
     if (this.phase === 'in') {
       this.veil -= dt / this.fadeTime;
       if (this.veil <= 0) { this.veil = 0; this.phase = 'hold'; }

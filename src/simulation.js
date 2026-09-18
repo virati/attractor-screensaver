@@ -195,11 +195,16 @@ export class Simulation {
 
   // Pull the trail buffer back to the CPU so the camera can frame the shape
   // it actually settled into, rather than the notebook's hand-tuned guess.
-  readPositions() {
+  //
+  // `maxRows` reads only the first few trajectories. The full readback is a few
+  // megabytes and costs a visible hitch, which is fine between shots but not
+  // during one; --continuous mode reframes on the move and asks for a slice.
+  readPositions(maxRows = this.particles) {
     const gl = this.gl;
-    const out = new Float32Array(this.steps * this.particles * 4);
+    const rows = Math.max(1, Math.min(this.particles, Math.floor(maxRows)));
+    const out = new Float32Array(this.steps * rows * 4);
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.state.fbo);
-    gl.readPixels(0, 0, this.steps, this.particles, gl.RGBA, gl.FLOAT, out);
+    gl.readPixels(0, 0, this.steps, rows, gl.RGBA, gl.FLOAT, out);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     return out;
   }
