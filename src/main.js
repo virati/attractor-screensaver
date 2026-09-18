@@ -23,7 +23,10 @@ const OPTS = {
   sweep: num('sweep', 0.12),
   sweepPeriod: Math.max(4, num('sweepPeriod', 55)),
   particles: Math.max(64, Math.min(4096, num('particles', 1024))),
-  steps: Math.max(8, Math.min(512, num('steps', 180))),
+  // Two samples is one segment, which is the shortest a trail can be and still
+  // have a direction; one sample would divide by zero working out where along
+  // the trail a vertex sits.
+  steps: Math.max(2, Math.min(512, num('steps', 180))),
   speed: num('speed', 1),
   theme: params.get('theme') || 'any',
   attractor: params.get('attractor'),
@@ -32,6 +35,14 @@ const OPTS = {
   history: params.get('history') !== '0'
 };
 
+// The look of the trail is rerolled per shot unless it is pinned here. Only the
+// keys actually given are overridden, so `width=2` still gets a random taper.
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const TRAIL = {};
+if (params.has('width')) TRAIL.width = clamp(num('width', 7), 0.5, 40);
+if (params.has('taper')) TRAIL.fade = clamp(num('taper', 0.35), 0, 2);
+if (params.has('tailFade')) TRAIL.tailFade = clamp(num('tailFade', 0.25), 0, 1);
+
 const el = id => document.getElementById(id);
 
 export async function boot() {
@@ -39,13 +50,17 @@ export async function boot() {
   const gl = createContext(canvas, { antialias: true });
 
   // Quality ladder, walked only between shots so changes are never visible.
-  const LADDER = [
-    { particles: 256, steps: 90 },
-    { particles: 512, steps: 120 },
-    { particles: 768, steps: 150 },
-    { particles: OPTS.particles, steps: OPTS.steps },
-    { particles: Math.min(2048, OPTS.particles * 2), steps: Math.min(320, OPTS.steps * 1.5 | 0) }
-  ];
+  //
+  // Every rung holds `steps` at whatever was asked for and sheds work by
+  // dropping trajectories instead. Trail length is a decision about how the
+  // thing looks; particle count mostly is not. The rungs used to carry their own
+  // step counts, which meant a request for short tails was quietly overruled the
+  // first time a frame ran long — and since a rung once lost is never climbed
+  // back to, overruled for the rest of the session.
+  const LADDER = [0.25, 0.5, 0.75, 1, 2].map(scale => ({
+    particles: Math.max(64, Math.min(4096, Math.round(OPTS.particles * scale))),
+    steps: OPTS.steps
+  }));
   let rung = 3;
   let pendingRung = 3;
   let ceilingRung = LADDER.length - 1;
@@ -57,7 +72,10 @@ export async function boot() {
     ? new Drift({ amplitude: OPTS.sweep, period: OPTS.sweepPeriod })
     : null;
 
+  // With the panel off there is no show() to fill it, so the static heading in
+  // the markup would otherwise sit there on its own.
   const history = OPTS.history ? new HistoryPanel(el('history')) : null;
+  if (!history) el('history').classList.add('hidden');
 
   const director = new Director(scene, {
     duration: OPTS.duration,
@@ -65,6 +83,7 @@ export async function boot() {
     theme: OPTS.theme,
     pinned: OPTS.attractor,
     drift,
+    trail: Object.keys(TRAIL).length ? TRAIL : null,
     quality: () => { rung = pendingRung; return LADDER[rung]; },
     onChange: describe
   });

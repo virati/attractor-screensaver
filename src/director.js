@@ -60,6 +60,7 @@ export class Director {
     pinned = null,
     quality = null,
     drift = null,
+    trail = null,
     onChange = () => {}
   } = {}) {
     this.scene = scene;
@@ -69,6 +70,7 @@ export class Director {
     this.theme = theme;
     this.quality = quality;
     this.drift = drift;
+    this.trail = trail;
     this.onChange = onChange;
     this.paused = false;
     this.margin = 1.35;
@@ -99,7 +101,10 @@ export class Director {
     const palette = pool[Math.floor(r() * pool.length)];
     const flip = r() < 0.5;
 
-    return {
+    // `this.trail` pins whichever of width/fade/tailFade were asked for. The
+    // random values are still drawn either way, so pinning one does not shift
+    // the sequence the others come from.
+    return Object.assign({
       palette,
       transform: transformFor(attractor),
       background: palette.background,
@@ -120,7 +125,7 @@ export class Director {
       floorY: -0.5,
       roomHalf: 2,
       pixelRatio: 1
-    };
+    }, this.trail);
   }
 
   load(attractor) {

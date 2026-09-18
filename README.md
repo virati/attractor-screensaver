@@ -81,7 +81,7 @@ bin/attractors --idle duration=30 theme=dark particles=2048
 | `theme` | `any` | `dark`, `paper`, or `any` |
 | `attractor` | — | pin the opening system, e.g. `attractor=Lorenz` |
 | `particles` | `1024` | trajectories simulated in parallel |
-| `steps` | `180` | samples per trail, i.e. how long the comet tails are |
+| `steps` | `180` | samples per trail, i.e. how long the comet tails are (2–512) |
 | `speed` | `1` | integration steps per display frame |
 | `dpr` | `1.75` | device-pixel-ratio ceiling |
 | `hud` | `1` | `0` hides the name and equations |
@@ -89,6 +89,29 @@ bin/attractors --idle duration=30 theme=dark particles=2048
 | `continuous` | — | drift the parameters instead of holding them fixed |
 | `sweep` | `0.12` | drift amplitude, as a fraction of each published value |
 | `sweepPeriod` | `55` | seconds for the base drift cycle |
+| `width` | random 4–11 | stroke thickness, in pixels |
+| `taper` | random 0.1–0.6 | how sharply the stroke narrows toward the tail |
+| `tailFade` | random 0.08–0.42 | how quickly the tail fades out |
+
+## The trail
+
+`steps` is the trail length: how many past positions of each particle are drawn
+behind it. Each trail is one trajectory, so cutting `steps` and raising
+`particles` trades comet tails for a swarm of separate moving things.
+
+```sh
+bin/attractors steps=5 particles=1400 width=3 taper=0.1 tailFade=0.95
+```
+
+The last three are normally rerolled every shot, along with the palette and the
+camera move. Giving one pins it; the others keep varying, and the random draw is
+still made either way so pinning one does not change the values the rest get.
+
+`steps` is now honoured at every rung of the quality ladder. The ladder sheds
+work when frames run long by dropping trajectories, not by shortening trails —
+its rungs used to carry step counts of their own (90, 120, 150), which meant a
+request for short tails was silently overruled the first time a frame ran long,
+and stayed overruled, since a rung once lost is never climbed back to.
 
 ## The history panel
 
