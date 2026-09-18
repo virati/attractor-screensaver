@@ -62,6 +62,7 @@ export class Director {
     drift = null,
     trail = null,
     oled = true,
+    slice = null,
     onChange = () => {}
   } = {}) {
     this.scene = scene;
@@ -79,7 +80,14 @@ export class Director {
     this.sinceReframe = 0;
 
     const start = pinned ? byName(pinned) : null;
-    this.playlist = shuffle(ATTRACTORS, rng);
+    // Slicing happens on the canonical order, not the shuffled one, so two
+    // instances slicing the same list get provably disjoint sets — otherwise
+    // each would be picking every n-th entry of its own private shuffle and the
+    // two could still land on the same system at the same time.
+    const pool = slice && slice.count > 1
+      ? ATTRACTORS.filter((_, i) => i % slice.count === slice.index)
+      : ATTRACTORS;
+    this.playlist = shuffle(pool.length ? pool : ATTRACTORS, rng);
     if (start) this.playlist = [start, ...this.playlist.filter(a => a !== start)];
     this.index = 0;
 

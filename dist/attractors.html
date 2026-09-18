@@ -272,8 +272,19 @@ const OPTS = {
   history: params.get('history') !== '0',
   // On by default: true-black grounds, and dark palettes only unless a light
   // one was asked for outright. `oled=0` restores the designed backgrounds.
-  oled: params.get('oled') !== '0'
+  oled: params.get('oled') !== '0',
+  // Multi-display: `label` names the window so the compositor can place it,
+  // and `slice=i/n` gives each instance a disjoint share of the systems.
+  label: params.get('label'),
+  slice: params.get('slice')
 };
+
+function sliceOf(spec) {
+  if (!spec) return null;
+  const [i, n] = spec.split('/').map(v => parseInt(v, 10));
+  if (!Number.isInteger(i) || !Number.isInteger(n) || n < 1 || i < 0 || i >= n) return null;
+  return { index: i, count: n };
+}
 
 // The look of the trail is rerolled per shot unless it is pinned here. Only the
 // keys actually given are overridden, so `width=2` still gets a random taper.
@@ -286,6 +297,10 @@ if (params.has('tailFade')) TRAIL.tailFade = clamp(num('tailFade', 0.25), 0, 1);
 const el = id => document.getElementById(id);
 
 async function boot() {
+  // The title is how a Wayland compositor tells one instance from another —
+  // clients cannot place themselves, so the window rule matches on this.
+  if (OPTS.label) document.title = `Attractors ${OPTS.label}`;
+
   const canvas = el('gl');
   const gl = createContext(canvas, { antialias: true });
 
@@ -325,6 +340,7 @@ async function boot() {
     drift,
     trail: Object.keys(TRAIL).length ? TRAIL : null,
     oled: OPTS.oled,
+    slice: sliceOf(OPTS.slice),
     quality: () => { rung = pendingRung; return LADDER[rung]; },
     onChange: describe
   });
@@ -1652,6 +1668,7 @@ class Director {
     drift = null,
     trail = null,
     oled = true,
+    slice = null,
     onChange = () => {}
   } = {}) {
     this.scene = scene;
@@ -1669,7 +1686,14 @@ class Director {
     this.sinceReframe = 0;
 
     const start = pinned ? byName(pinned) : null;
-    this.playlist = shuffle(ATTRACTORS, rng);
+    // Slicing happens on the canonical order, not the shuffled one, so two
+    // instances slicing the same list get provably disjoint sets — otherwise
+    // each would be picking every n-th entry of its own private shuffle and the
+    // two could still land on the same system at the same time.
+    const pool = slice && slice.count > 1
+      ? ATTRACTORS.filter((_, i) => i % slice.count === slice.index)
+      : ATTRACTORS;
+    this.playlist = shuffle(pool.length ? pool : ATTRACTORS, rng);
     if (start) this.playlist = [start, ...this.playlist.filter(a => a !== start)];
     this.index = 0;
 

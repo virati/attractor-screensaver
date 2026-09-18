@@ -35,8 +35,19 @@ const OPTS = {
   history: params.get('history') !== '0',
   // On by default: true-black grounds, and dark palettes only unless a light
   // one was asked for outright. `oled=0` restores the designed backgrounds.
-  oled: params.get('oled') !== '0'
+  oled: params.get('oled') !== '0',
+  // Multi-display: `label` names the window so the compositor can place it,
+  // and `slice=i/n` gives each instance a disjoint share of the systems.
+  label: params.get('label'),
+  slice: params.get('slice')
 };
+
+function sliceOf(spec) {
+  if (!spec) return null;
+  const [i, n] = spec.split('/').map(v => parseInt(v, 10));
+  if (!Number.isInteger(i) || !Number.isInteger(n) || n < 1 || i < 0 || i >= n) return null;
+  return { index: i, count: n };
+}
 
 // The look of the trail is rerolled per shot unless it is pinned here. Only the
 // keys actually given are overridden, so `width=2` still gets a random taper.
@@ -49,6 +60,10 @@ if (params.has('tailFade')) TRAIL.tailFade = clamp(num('tailFade', 0.25), 0, 1);
 const el = id => document.getElementById(id);
 
 export async function boot() {
+  // The title is how a Wayland compositor tells one instance from another —
+  // clients cannot place themselves, so the window rule matches on this.
+  if (OPTS.label) document.title = `Attractors ${OPTS.label}`;
+
   const canvas = el('gl');
   const gl = createContext(canvas, { antialias: true });
 
@@ -88,6 +103,7 @@ export async function boot() {
     drift,
     trail: Object.keys(TRAIL).length ? TRAIL : null,
     oled: OPTS.oled,
+    slice: sliceOf(OPTS.slice),
     quality: () => { rung = pendingRung; return LADDER[rung]; },
     onChange: describe
   });

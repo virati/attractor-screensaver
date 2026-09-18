@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Launch the attractor screensaver in a kiosk browser window.
 #
-#   attractors              # interactive window (arrow keys, drag to orbit)
-#   attractors --idle       # screensaver mode: no cursor, any input dismisses it
-#   attractors --continuous # drift each system's parameters while it plays
-#   attractors --bright     # designed backgrounds instead of OLED true black
-#   attractors --windowed   # normal browser window instead of fullscreen kiosk
+#   attractors                 # interactive window (arrow keys, drag to orbit)
+#   attractors --idle          # screensaver mode: no cursor, any input dismisses it
+#   attractors --all-displays  # one instance per monitor, disjoint sets of systems
+#   attractors --continuous    # drift each system's parameters while it plays
+#   attractors --bright        # designed backgrounds instead of OLED true black
+#   attractors --windowed      # normal browser window instead of fullscreen kiosk
 #
 # Anything else you pass is appended to the page's query string, e.g.
 #   attractors --idle duration=30 theme=dark particles=2048
@@ -14,21 +15,29 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 QUERY=()
 KIOSK=1
+ALL_DISPLAYS=0
 
 for arg in "$@"; do
   case "$arg" in
-    --idle|-i)       QUERY+=("idle=1") ;;
-    --continuous|-c) QUERY+=("continuous=1") ;;
-    --bright|-b)     QUERY+=("oled=0") ;;
-    --windowed|-w)   KIOSK=0 ;;
-    --help|-h)       sed -n '2,11p' "$0" | sed 's/^# \?//'; exit 0 ;;
-    -*)              echo "unknown option: $arg" >&2; exit 2 ;;
-    *)               QUERY+=("$arg") ;;
+    --idle|-i)         QUERY+=("idle=1") ;;
+    --continuous|-c)   QUERY+=("continuous=1") ;;
+    --bright|-b)       QUERY+=("oled=0") ;;
+    --windowed|-w)     KIOSK=0 ;;
+    --all-displays|-a) ALL_DISPLAYS=1 ;;
+    --help|-h)         sed -n '2,12p' "$0" | sed 's/^# \?//'; exit 0 ;;
+    -*)                echo "unknown option: $arg" >&2; exit 2 ;;
+    *)                 QUERY+=("$arg") ;;
   esac
 done
 
 PY_BIN="${PYTHON:-python3}"
 command -v "$PY_BIN" >/dev/null || { echo "python3 is required" >&2; exit 1; }
+
+BROWSER_PIDS=()
+PROFILE_DIRS=()
+KWIN_SCRIPT=""
+KWIN_SCRIPT_NAME=""
+QDBUS="$(command -v qdbus-qt6 || command -v qdbus6 || command -v qdbus || true)"
 
 # --- static server -----------------------------------------------------------
 SERVER_OUT="$(mktemp)"
@@ -36,10 +45,15 @@ SERVER_OUT="$(mktemp)"
 SERVER_PID=$!
 
 cleanup() {
-  [[ -n "${BROWSER_PID:-}" ]] && kill "$BROWSER_PID" 2>/dev/null || true
+  if [[ -n "$KWIN_SCRIPT_NAME" && -n "$QDBUS" ]]; then
+    "$QDBUS" org.kde.KWin /Scripting org.kde.kwin.Scripting.unloadScript \
+      "$KWIN_SCRIPT_NAME" >/dev/null 2>&1 || true
+  fi
+  [[ -n "$KWIN_SCRIPT" ]] && rm -f "$KWIN_SCRIPT"
+  for pid in ${BROWSER_PIDS[@]+"${BROWSER_PIDS[@]}"}; do kill "$pid" 2>/dev/null || true; done
   kill "$SERVER_PID" 2>/dev/null || true
   rm -f "$SERVER_OUT"
-  [[ -n "${PROFILE_DIR:-}" ]] && rm -rf "$PROFILE_DIR" || true
+  for d in ${PROFILE_DIRS[@]+"${PROFILE_DIRS[@]}"}; do rm -rf "$d" || true; done
 }
 trap cleanup EXIT INT TERM
 
@@ -51,10 +65,12 @@ for _ in $(seq 1 100); do
 done
 [[ -n "$PORT" ]] || { echo "server failed to start" >&2; exit 1; }
 
-URL="http://127.0.0.1:${PORT}/index.html"
-if [[ ${#QUERY[@]} -gt 0 ]]; then
-  URL="${URL}?$(IFS='&'; echo "${QUERY[*]}")"
-fi
+build_url() {  # build_url <extra…>
+  local parts=(${QUERY[@]+"${QUERY[@]}"} "$@")
+  local url="http://127.0.0.1:${PORT}/index.html"
+  [[ ${#parts[@]} -gt 0 ]] && url="${url}?$(IFS='&'; echo "${parts[*]}")"
+  echo "$url"
+}
 
 # --- browser -----------------------------------------------------------------
 find_browser() {
@@ -77,34 +93,145 @@ find_browser() {
 BROWSER="$(find_browser)"
 [[ -n "$BROWSER" ]] || { echo "no supported browser found (set ATTRACTORS_BROWSER)" >&2; exit 1; }
 
-PROFILE_DIR="$(mktemp -d -t attractors-profile-XXXXXX)"
+launch() {  # launch <url> <class>
+  local url="$1" klass="$2" profile
+  profile="$(mktemp -d -t attractors-profile-XXXXXX)"
+  PROFILE_DIRS+=("$profile")
 
-chromium_args=(
-  "--app=$URL"
-  "--user-data-dir=$PROFILE_DIR"
-  --no-first-run
-  --no-default-browser-check
-  --disable-session-crashed-bubble
-  --disable-features=Translate,InfiniteSessionRestore
-  --hide-scrollbars
-  --ozone-platform-hint=auto
-  --enable-features=VaapiVideoDecoder
-)
-[[ $KIOSK -eq 1 ]] && chromium_args+=(--kiosk --start-fullscreen)
+  local args=(
+    "--app=$url"
+    "--user-data-dir=$profile"
+    "--class=$klass"
+    --no-first-run
+    --no-default-browser-check
+    --disable-session-crashed-bubble
+    --disable-features=Translate,InfiniteSessionRestore
+    --hide-scrollbars
+    --ozone-platform-hint=auto
+    --enable-features=VaapiVideoDecoder
+  )
+  # With one window per display the compositor owns the geometry, so kiosk is
+  # left off there: --kiosk fullscreens onto whichever output the window first
+  # lands on, which is the thing being corrected.
+  [[ $KIOSK -eq 1 && $ALL_DISPLAYS -eq 0 ]] && args+=(--kiosk --start-fullscreen)
 
-case "$BROWSER" in
-  flatpak:org.mozilla.firefox)
-    flatpak run org.mozilla.firefox --new-window "$URL" & BROWSER_PID=$! ;;
-  firefox)
-    firefox --new-window "$URL" & BROWSER_PID=$! ;;
-  flatpak:*)
-    flatpak run "${BROWSER#flatpak:}" "${chromium_args[@]}" & BROWSER_PID=$! ;;
-  *)
-    "$BROWSER" "${chromium_args[@]}" & BROWSER_PID=$! ;;
-esac
+  case "$BROWSER" in
+    flatpak:org.mozilla.firefox) flatpak run org.mozilla.firefox --new-window "$url" & ;;
+    firefox)                     firefox --new-window "$url" & ;;
+    flatpak:*)                   flatpak run "${BROWSER#flatpak:}" "${args[@]}" & ;;
+    *)                           "$BROWSER" "${args[@]}" & ;;
+  esac
+  BROWSER_PIDS+=($!)
+}
 
-# Whichever goes first ends the session: the page asking to quit, or the window
-# being closed by hand.
-while kill -0 "$SERVER_PID" 2>/dev/null && kill -0 "$BROWSER_PID" 2>/dev/null; do
+# --- placement ---------------------------------------------------------------
+# A Wayland client cannot put itself on a chosen monitor, so the compositor has
+# to. This loads a KWin script for the life of the session that matches each
+# window by title and pins it to one output's logical rectangle. Nothing is
+# written to kwinrulesrc, so existing window rules are untouched, and unloading
+# the script on exit leaves no trace.
+place_windows() {  # place_windows <rects-json>
+  # ATTRACTORS_PLACE=0 leaves the windows wherever the compositor puts them,
+  # which is the only option on a compositor that is not KWin.
+  [[ "${ATTRACTORS_PLACE:-1}" != "0" ]] || { echo "placement disabled" >&2; return; }
+  [[ -n "$QDBUS" ]] || { echo "qdbus not found; windows will not be placed" >&2; return; }
+  KWIN_SCRIPT="$(mktemp -t attractors-place-XXXXXX.js)"
+  cat > "$KWIN_SCRIPT" <<EOF
+var RECTS = $1;
+var FULLSCREEN = $([[ $KIOSK -eq 1 ]] && echo true || echo false);
+
+// Idempotent: a window already fullscreen on its own output, or already sitting
+// at its rectangle, is left alone. Without that guard the activation signal
+// below would re-fullscreen on every focus change and the screen would flicker.
+function place(w) {
+  if (!w || !w.caption) return;
+  var r = RECTS[w.caption];
+  if (!r) return;
+  var settled = w.output && w.output.name === r.output;
+  if (settled && (FULLSCREEN ? w.fullScreen
+                             : (w.frameGeometry && w.frameGeometry.width === r.w))) return;
+  w.keepAbove = true;
+  w.skipTaskbar = true;
+  w.skipSwitcher = true;
+  w.skipPager = true;
+  // Fullscreen is dropped first, or the geometry assignment has no effect and
+  // the window re-fullscreens onto whichever output it was already on.
+  if (w.fullScreen) w.fullScreen = false;
+  w.frameGeometry = { x: r.x, y: r.y, width: r.w, height: r.h };
+  if (FULLSCREEN) w.fullScreen = true;
+}
+
+// Every event re-places every window, not just the one that fired. Chromium
+// sets its real title a beat after the window is mapped, so hooking a single
+// window's captionChanged races against that title arriving -- whichever window
+// wins the race gets placed and the other is left where it landed.
+function placeAll() {
+  var list = workspace.windowList ? workspace.windowList()
+           : (workspace.clientList ? workspace.clientList() : []);
+  for (var i = 0; i < list.length; i++) place(list[i]);
+}
+
+function hook(w) {
+  if (w.captionChanged && w.captionChanged.connect) w.captionChanged.connect(placeAll);
+  if (w.outputChanged && w.outputChanged.connect) w.outputChanged.connect(placeAll);
+  placeAll();
+}
+
+var added = workspace.windowAdded || workspace.clientAdded;
+if (added && added.connect) added.connect(hook);
+if (workspace.windowActivated && workspace.windowActivated.connect) {
+  workspace.windowActivated.connect(placeAll);
+}
+placeAll();
+EOF
+  KWIN_SCRIPT_NAME="attractors-place-$$"
+  "$QDBUS" org.kde.KWin /Scripting org.kde.kwin.Scripting.loadScript \
+    "$KWIN_SCRIPT" "$KWIN_SCRIPT_NAME" >/dev/null 2>&1 || true
+  "$QDBUS" org.kde.KWin /Scripting org.kde.kwin.Scripting.start >/dev/null 2>&1 || true
+}
+
+# --- go ----------------------------------------------------------------------
+if [[ $ALL_DISPLAYS -eq 1 ]]; then
+  command -v kscreen-doctor >/dev/null && command -v jq >/dev/null || {
+    echo "--all-displays needs kscreen-doctor and jq" >&2; exit 1; }
+
+  mapfile -t OUTPUTS < <(kscreen-doctor -j | jq -r '
+    .outputs | map(select(.enabled)) | sort_by(.priority) | .[]
+    | . as $o | (($o.scale // 1)) as $s
+    | (if ($o.rotation == 2 or $o.rotation == 8)
+       then [($o.size.height / $s), ($o.size.width / $s)]
+       else [($o.size.width / $s), ($o.size.height / $s)] end) as $wh
+    | "\($o.name)\t\($o.pos.x)\t\($o.pos.y)\t\($wh[0] | round)\t\($wh[1] | round)"')
+
+  COUNT=${#OUTPUTS[@]}
+  [[ $COUNT -gt 0 ]] || { echo "no enabled outputs found" >&2; exit 1; }
+
+  RECTS="{"
+  for i in "${!OUTPUTS[@]}"; do
+    IFS=$'\t' read -r NAME X Y W H <<< "${OUTPUTS[$i]}"
+    LABEL=$((i + 1))
+    [[ $i -gt 0 ]] && RECTS+=","
+    RECTS+="\"Attractors ${LABEL}\":{\"x\":${X},\"y\":${Y},\"w\":${W},\"h\":${H},\"output\":\"${NAME}\"}"
+    echo "display ${LABEL}: ${NAME} at ${X},${Y} ${W}x${H}  (systems ${i}/${COUNT})"
+  done
+  RECTS+="}"
+
+  place_windows "$RECTS"
+  for i in "${!OUTPUTS[@]}"; do
+    launch "$(build_url "label=$((i + 1))" "slice=${i}/${COUNT}")" "attractors-${i}"
+    # Two browser launches fired at once race each other through flatpak's
+    # instance setup and one loses; a beat between them is enough.
+    [[ $i -lt $((COUNT - 1)) ]] && sleep 2
+  done
+else
+  launch "$(build_url)" "attractors"
+fi
+
+# Whichever goes first ends the session: the page asking to quit, or the last
+# window being closed by hand.
+while kill -0 "$SERVER_PID" 2>/dev/null; do
+  alive=0
+  for pid in "${BROWSER_PIDS[@]}"; do kill -0 "$pid" 2>/dev/null && alive=1; done
+  [[ $alive -eq 1 ]] || break
   sleep 0.4
 done

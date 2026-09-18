@@ -12,11 +12,14 @@ Two pieces: install the units, then push Plasma's own idle timers out past them.
 Claude Code and most shells live in a toolbox — so reach the host explicitly:
 
 ```sh
-flatpak-spawn --host ~/Projects/attractor-screensaver/install.sh 300
+flatpak-spawn --host ~/Projects/attractor-screensaver/install.sh 600 3600
 ```
 
-`300` is the idle threshold in seconds. Re-run with a different number to
-change it.
+The first number is when the screensaver starts, the second when the displays
+turn off, both in seconds. Re-run with different numbers to change them.
+
+Since the installer now sets Plasma's timers itself, section 2 below is done for
+you on AC; it is kept as a description of what was changed and why.
 
 Try it without waiting:
 

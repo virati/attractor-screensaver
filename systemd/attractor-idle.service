@@ -5,10 +5,15 @@ After=graphical-session.target
 
 [Service]
 Type=simple
-Environment=ATTRACTOR_IDLE_SECONDS=300
+Environment=ATTRACTOR_IDLE_SECONDS=600
+Environment=ATTRACTOR_STOP_SECONDS=3570
+# The second timeout stops the screensaver just before the panels go dark, so a
+# GPU-saturating WebGL page is not left rendering into a switched-off OLED for
+# the rest of the night. Turning the displays off is left to powerdevil.
 ExecStart=/usr/bin/swayidle -w \
   timeout ${ATTRACTOR_IDLE_SECONDS} 'systemctl --user start attractor-screensaver.service' \
-  resume 'systemctl --user stop attractor-screensaver.service'
+    resume 'systemctl --user stop attractor-screensaver.service' \
+  timeout ${ATTRACTOR_STOP_SECONDS} 'systemctl --user stop attractor-screensaver.service'
 Restart=on-failure
 RestartSec=5
 

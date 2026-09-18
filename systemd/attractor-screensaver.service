@@ -4,5 +4,5 @@ PartOf=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=%h/Projects/attractor-screensaver/bin/attractors --idle
+ExecStart=%h/Projects/attractor-screensaver/bin/attractors --idle --all-displays
 Restart=no

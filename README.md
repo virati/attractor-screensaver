@@ -20,6 +20,7 @@ bin/attractors              # interactive window
 bin/attractors --idle       # screensaver mode: no cursor, any input dismisses it
 bin/attractors --continuous # parameters drift while each system plays
 bin/attractors --bright     # designed backgrounds instead of OLED true black
+bin/attractors --all-displays   # one instance per monitor
 ```
 
 The launcher starts a throwaway static server on localhost and opens a kiosk
@@ -35,8 +36,34 @@ node tools/build-single.mjs     # -> dist/attractors.html
 ## Install as the actual screensaver
 
 ```sh
-./install.sh 300            # kick in after 300 seconds idle
+./install.sh 600 3600       # screensaver at 10 min, displays off at 1 hour
 ```
+
+The first number is when the screensaver starts, the second when Plasma turns
+the panels off. The installer also stops the screensaver 30 seconds before that,
+so a GPU-saturating page is not left rendering into a switched-off OLED all
+night, disables dimming on AC (it was landing on top of the screensaver) and
+sets the lock screen to match the display-off time. Only the AC profile is
+touched.
+
+## More than one display
+
+`--all-displays` runs one instance per monitor. Each gets its own share of the
+systems — the list is sliced on its canonical order before being shuffled, so
+two displays are never showing the same attractor at the same time.
+
+A Wayland client cannot choose which monitor it opens on, so the compositor has
+to be told. The launcher loads a KWin script for the life of the session that
+matches each window by title and pins it to one output's logical rectangle.
+Nothing is written to `kwinrulesrc`, so your own window rules are untouched, and
+unloading the script on exit leaves no trace. `ATTRACTORS_PLACE=0` skips that
+step, which is the only option on a compositor that is not KWin.
+
+Two things there are worth knowing. The launches are staggered by two seconds:
+fired at once, two `flatpak run` invocations race through instance setup and one
+of them dies. And placement re-runs for every window on every window event
+rather than hooking one window's title change — Chromium sets its real title a
+beat after the window is mapped, and hooking a single window races that.
 
 This writes two systemd user units. `attractor-idle.service` runs `swayidle`,
 which listens on `ext-idle-notify-v1` (KWin 6 speaks it, as do the wlroots
