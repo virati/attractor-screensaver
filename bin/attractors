@@ -4,6 +4,7 @@
 #   attractors              # interactive window (arrow keys, drag to orbit)
 #   attractors --idle       # screensaver mode: no cursor, any input dismisses it
 #   attractors --continuous # drift each system's parameters while it plays
+#   attractors --bright     # designed backgrounds instead of OLED true black
 #   attractors --windowed   # normal browser window instead of fullscreen kiosk
 #
 # Anything else you pass is appended to the page's query string, e.g.
@@ -18,8 +19,9 @@ for arg in "$@"; do
   case "$arg" in
     --idle|-i)       QUERY+=("idle=1") ;;
     --continuous|-c) QUERY+=("continuous=1") ;;
+    --bright|-b)     QUERY+=("oled=0") ;;
     --windowed|-w)   KIOSK=0 ;;
-    --help|-h)       sed -n '2,10p' "$0" | sed 's/^# \?//'; exit 0 ;;
+    --help|-h)       sed -n '2,11p' "$0" | sed 's/^# \?//'; exit 0 ;;
     -*)              echo "unknown option: $arg" >&2; exit 2 ;;
     *)               QUERY+=("$arg") ;;
   esac

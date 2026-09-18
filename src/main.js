@@ -32,7 +32,10 @@ const OPTS = {
   attractor: params.get('attractor'),
   maxPixelRatio: num('dpr', 1.75),
   hud: params.get('hud') !== '0',
-  history: params.get('history') !== '0'
+  history: params.get('history') !== '0',
+  // On by default: true-black grounds, and dark palettes only unless a light
+  // one was asked for outright. `oled=0` restores the designed backgrounds.
+  oled: params.get('oled') !== '0'
 };
 
 // The look of the trail is rerolled per shot unless it is pinned here. Only the
@@ -84,6 +87,7 @@ export async function boot() {
     pinned: OPTS.attractor,
     drift,
     trail: Object.keys(TRAIL).length ? TRAIL : null,
+    oled: OPTS.oled,
     quality: () => { rung = pendingRung; return LADDER[rung]; },
     onChange: describe
   });

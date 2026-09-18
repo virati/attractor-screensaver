@@ -49,6 +49,28 @@ export const PALETTES = raw.map(p => {
   };
 });
 
+// Black is free on an OLED: a pixel driven to zero draws no current, while the
+// near-blacks these palettes were designed around still light every pixel on the
+// panel. The background is almost the whole screen almost all of the time, so
+// dropping it to true black is the one change that matters for power.
+//
+// Paper palettes are returned untouched. Their ink is dark, so a black ground
+// would leave nothing visible — a light scheme cannot be made frugal, only
+// avoided, which is what the palette pool does by default.
+export function oledSafe(palette) {
+  if (!palette.dark) return palette;
+  const background = [0, 0, 0];
+  return {
+    ...palette,
+    background,
+    shadowColor: mix(background, palette.color1, 0.42),
+    // The grid room is background too, and the largest lit area after the
+    // trails themselves, so it is dimmed rather than left alone.
+    gridOpacity: palette.gridOpacity * 0.55,
+    css: { ...palette.css, background: '#000000' }
+  };
+}
+
 export const pick = (rng = Math.random, filter = () => true) => {
   const pool = PALETTES.filter(filter);
   return pool[Math.floor(rng() * pool.length)];

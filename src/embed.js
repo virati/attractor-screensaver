@@ -18,6 +18,7 @@ export function mount({
   maxPixelRatio = 1.6,
   theme = 'dark',
   continuous = false,
+  oled = true,
   onChange = () => {},
   onVeil = () => {}
 }) {
@@ -39,6 +40,7 @@ export function mount({
     fadeTime: 1.2,
     theme,
     drift: continuous ? new Drift() : null,
+    oled,
     quality: () => LADDER[pendingRung],
     onChange: (attractor, style, dir) => onChange({
       name: attractor.name,

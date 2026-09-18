@@ -19,6 +19,7 @@ at reading pace.
 bin/attractors              # interactive window
 bin/attractors --idle       # screensaver mode: no cursor, any input dismisses it
 bin/attractors --continuous # parameters drift while each system plays
+bin/attractors --bright     # designed backgrounds instead of OLED true black
 ```
 
 The launcher starts a throwaway static server on localhost and opens a kiosk
@@ -79,6 +80,7 @@ bin/attractors --idle duration=30 theme=dark particles=2048
 | `duration` | `300` | seconds per attractor; `0` holds the first one forever |
 | `fade` | `1.4` | seconds of cross-fade between attractors |
 | `theme` | `any` | `dark`, `paper`, or `any` |
+| `oled` | `1` | `0` restores the designed backgrounds and the light palettes |
 | `attractor` | — | pin the opening system, e.g. `attractor=Lorenz` |
 | `particles` | `1024` | trajectories simulated in parallel |
 | `steps` | `180` | samples per trail, i.e. how long the comet tails are (2–512) |
@@ -92,6 +94,39 @@ bin/attractors --idle duration=30 theme=dark particles=2048
 | `width` | random 4–11 | stroke thickness, in pixels |
 | `taper` | random 0.1–0.6 | how sharply the stroke narrows toward the tail |
 | `tailFade` | random 0.08–0.42 | how quickly the tail fades out |
+
+## OLED power
+
+Backgrounds are driven to true black by default, because this is meant to run
+unattended on an OLED panel and a pixel at zero draws no current at all. Two
+things change from the palettes as designed:
+
+- every dark ground drops from its near-black (`#07090e`, `#0b0605`, …) to
+  `#000000`, and the grid room — the largest lit area after the trails — is
+  dimmed from 0.32 to 0.18;
+- the three light palettes are dropped from the default pool. A light scheme
+  cannot be made frugal, only avoided: its ink is dark, so a black ground would
+  leave nothing visible.
+
+Measured over a headless 1600×900 render of the same system:
+
+| | mean panel luminance | pixels drawing nothing |
+|---|---|---|
+| default | **7.8%** | 55% |
+| `--bright`, dark palette | 8.3% | 0% |
+| `--bright`, light palette | 92.1% | 0% |
+
+The near-blacks were never the main cost — dropping them to zero moves mean
+luminance by about half a point, though it does take 55% of the panel to fully
+off, which is worth more than that half point suggests since an OLED subpixel
+at zero is switched off rather than driven dim. The real saving is the light
+palettes: three of the fifteen, so one shot in five used to be a near-white
+screen. Averaged over a session that is roughly 25% mean luminance before
+against 7.8% after.
+
+`--bright` (or `oled=0`) restores the original behaviour. An explicit
+`theme=paper` is still honoured either way — asking for a light ground outright
+is taken to mean you want one.
 
 ## The trail
 

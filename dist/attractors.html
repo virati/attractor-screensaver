@@ -177,7 +177,7 @@
     display: none;
     place-content: center;
     padding: 12vw;
-    background: #0b0d12;
+    background: #000;
     color: #ffb4a8;
     font-family: ui-monospace, Menlo, monospace;
     font-size: .85rem;
@@ -269,7 +269,10 @@ const OPTS = {
   attractor: params.get('attractor'),
   maxPixelRatio: num('dpr', 1.75),
   hud: params.get('hud') !== '0',
-  history: params.get('history') !== '0'
+  history: params.get('history') !== '0',
+  // On by default: true-black grounds, and dark palettes only unless a light
+  // one was asked for outright. `oled=0` restores the designed backgrounds.
+  oled: params.get('oled') !== '0'
 };
 
 // The look of the trail is rerolled per shot unless it is pinned here. Only the
@@ -321,6 +324,7 @@ async function boot() {
     pinned: OPTS.attractor,
     drift,
     trail: Object.keys(TRAIL).length ? TRAIL : null,
+    oled: OPTS.oled,
     quality: () => { rung = pendingRung; return LADDER[rung]; },
     onChange: describe
   });
@@ -1588,7 +1592,7 @@ __def("director.js", function (__exports, __req) {
 // different palette and camera move, and cross-fades between them.
 
 const { ATTRACTORS, byName } = __req('attractors.js');
-const { PALETTES } = __req('palettes.js');
+const { PALETTES, oledSafe } = __req('palettes.js');
 const { viewTransform } = __req('mat4.js');
 
 const shuffle = (arr, rng) => {
@@ -1647,6 +1651,7 @@ class Director {
     quality = null,
     drift = null,
     trail = null,
+    oled = true,
     onChange = () => {}
   } = {}) {
     this.scene = scene;
@@ -1657,6 +1662,7 @@ class Director {
     this.quality = quality;
     this.drift = drift;
     this.trail = trail;
+    this.oled = oled;
     this.onChange = onChange;
     this.paused = false;
     this.margin = 1.35;
@@ -1677,14 +1683,18 @@ class Director {
 
   palettePool() {
     if (this.theme === 'dark') return PALETTES.filter(p => p.dark);
+    // An explicit request for paper is an explicit request for a light ground,
+    // so it is honoured; oledSafe then leaves those palettes alone.
     if (this.theme === 'paper') return PALETTES.filter(p => !p.dark);
+    if (this.oled) return PALETTES.filter(p => p.dark);
     return PALETTES;
   }
 
   dress(attractor) {
     const r = this.rng;
     const pool = this.palettePool();
-    const palette = pool[Math.floor(r() * pool.length)];
+    const chosen = pool[Math.floor(r() * pool.length)];
+    const palette = this.oled ? oledSafe(chosen) : chosen;
     const flip = r() < 0.5;
 
     // `this.trail` pins whichever of width/fade/tailFade were asked for. The
@@ -2427,12 +2437,34 @@ const PALETTES = raw.map(p => {
   };
 });
 
+// Black is free on an OLED: a pixel driven to zero draws no current, while the
+// near-blacks these palettes were designed around still light every pixel on the
+// panel. The background is almost the whole screen almost all of the time, so
+// dropping it to true black is the one change that matters for power.
+//
+// Paper palettes are returned untouched. Their ink is dark, so a black ground
+// would leave nothing visible — a light scheme cannot be made frugal, only
+// avoided, which is what the palette pool does by default.
+function oledSafe(palette) {
+  if (!palette.dark) return palette;
+  const background = [0, 0, 0];
+  return {
+    ...palette,
+    background,
+    shadowColor: mix(background, palette.color1, 0.42),
+    // The grid room is background too, and the largest lit area after the
+    // trails themselves, so it is dimmed rather than left alone.
+    gridOpacity: palette.gridOpacity * 0.55,
+    css: { ...palette.css, background: '#000000' }
+  };
+}
+
 const pick = (rng = Math.random, filter = () => true) => {
   const pool = PALETTES.filter(filter);
   return pool[Math.floor(rng() * pool.length)];
 };
 
-Object.assign(__exports, { PALETTES, pick });
+Object.assign(__exports, { PALETTES, oledSafe, pick });
 
 });
 

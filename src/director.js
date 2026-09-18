@@ -2,7 +2,7 @@
 // different palette and camera move, and cross-fades between them.
 
 import { ATTRACTORS, byName } from './attractors.js';
-import { PALETTES } from './palettes.js';
+import { PALETTES, oledSafe } from './palettes.js';
 import { viewTransform } from './mat4.js';
 
 const shuffle = (arr, rng) => {
@@ -61,6 +61,7 @@ export class Director {
     quality = null,
     drift = null,
     trail = null,
+    oled = true,
     onChange = () => {}
   } = {}) {
     this.scene = scene;
@@ -71,6 +72,7 @@ export class Director {
     this.quality = quality;
     this.drift = drift;
     this.trail = trail;
+    this.oled = oled;
     this.onChange = onChange;
     this.paused = false;
     this.margin = 1.35;
@@ -91,14 +93,18 @@ export class Director {
 
   palettePool() {
     if (this.theme === 'dark') return PALETTES.filter(p => p.dark);
+    // An explicit request for paper is an explicit request for a light ground,
+    // so it is honoured; oledSafe then leaves those palettes alone.
     if (this.theme === 'paper') return PALETTES.filter(p => !p.dark);
+    if (this.oled) return PALETTES.filter(p => p.dark);
     return PALETTES;
   }
 
   dress(attractor) {
     const r = this.rng;
     const pool = this.palettePool();
-    const palette = pool[Math.floor(r() * pool.length)];
+    const chosen = pool[Math.floor(r() * pool.length)];
+    const palette = this.oled ? oledSafe(chosen) : chosen;
     const flip = r() < 0.5;
 
     // `this.trail` pins whichever of width/fade/tailFade were asked for. The
