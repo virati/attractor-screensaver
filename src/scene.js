@@ -35,8 +35,26 @@ export class Scene {
     gl.clearDepth(1);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-    gl.disable(gl.BLEND);
-    gl.enable(gl.SAMPLE_ALPHA_TO_COVERAGE);
+    // Two ways to resolve the soft edge the SDF produces.
+    //
+    // Alpha-to-coverage turns that alpha into a multisample coverage mask,
+    // which keeps the pass opaque so trails depth-test against each other with
+    // no sorting at all. The cost is that coverage has only as many levels as
+    // the buffer has samples -- four or so -- applied through a fixed dither,
+    // so every cap and joint edge is quantised and stair-steps.
+    //
+    // Blending gives the full range and a genuinely smooth edge. The cost is
+    // order: overlapping trails are composited in draw order rather than depth
+    // order, and sorting a hundred thousand segments a frame is not on. Depth
+    // testing and writing stay on, so the error is confined to the translucent
+    // edges rather than the whole stroke.
+    if (style.blend) {
+      gl.enable(gl.BLEND);
+      gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    } else {
+      gl.disable(gl.BLEND);
+      gl.enable(gl.SAMPLE_ALPHA_TO_COVERAGE);
+    }
 
     if (style.shadow && this.camera.eye[1] > style.floorY) {
       gl.disable(gl.DEPTH_TEST);
@@ -49,7 +67,8 @@ export class Scene {
     gl.depthFunc(gl.LEQUAL);
     this.trails.draw(this.sim, this.camera, style, { shadow: false });
 
-    gl.disable(gl.SAMPLE_ALPHA_TO_COVERAGE);
+    if (style.blend) gl.disable(gl.BLEND);
+    else gl.disable(gl.SAMPLE_ALPHA_TO_COVERAGE);
 
     if (style.gridOpacity > 0.002) this.stage.draw(this.camera, style);
 

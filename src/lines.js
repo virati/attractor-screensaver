@@ -16,7 +16,7 @@ layout(location = 0) in vec2 corner;   // (0..1, 0..1)
 uniform mat4 uProjView, uTransform;
 uniform sampler2D uState;
 uniform ivec4 uRing;      // steps, particles, head, filled
-uniform int uSegsPerTrail, uMode, uShadow;
+uniform int uSegsPerTrail, uMode, uShadow, uBlend;
 uniform vec2 uResolution; // device pixels
 uniform float uWidth, uFade, uTailFade, uColorMode, uFloorY;
 uniform vec3 uColor1, uColor2, uBackground, uShadowColor;
@@ -117,10 +117,17 @@ void main () {
   if (uShadow == 1) {
     vColor = vec4(uShadowColor, 1.0);
   } else {
+    // uColorMode weighs the particle's seed radius against its index. The
+    // notebook offers the same two ends of this and nothing between; a value
+    // in between is the one thing here it cannot do.
     float coord = mix(quasirandom(float(particle) + 0.5).z, pn, uColorMode);
     vec3 rgb = mix(uColor1, uColor2, coord);
-    rgb = mix(rgb, uBackground, uTailFade * pow(1.0 - param, 0.7));
-    vColor = vec4(rgb, 1.0);
+    // The tail fade stays in the colour rather than moving into alpha. Carrying
+    // it in alpha reads better in theory and is what the notebook does, but the
+    // joints here are separate discs drawn under the segments, and that only
+    // hides them while the segments are opaque. A translucent stroke lets every
+    // disc show through and the trail turns into a chain of beads.
+    vColor = vec4(mix(rgb, uBackground, uTailFade * pow(1.0 - param, 0.7)), 1.0);
   }
 }`;
 
@@ -132,7 +139,7 @@ in vec2 vLineCoord;
 in float vWidth, vShade;
 in vec4 vColor;
 
-uniform int uShadow;
+uniform int uShadow, uBlend;
 uniform float uShading;
 uniform vec2 uBorderWidth;
 uniform vec4 uBorderColor;
@@ -141,11 +148,23 @@ out vec4 fragColor;
 
 float linearstep (float a, float b, float x) { return clamp((x - a) / (b - a), 0.0, 1.0); }
 
+// Interleaved gradient noise, under half a step of 8-bit colour. The tail fade
+// walks a long, low-contrast ramp into the background, and against a true-black
+// ground the dark end of that ramp has very few values left, so it bands in
+// visible rings. Dithering turns the step into noise below the eye's threshold.
+float dither (vec2 p) {
+  return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715)))) - 0.5;
+}
+
 void main () {
   float sdf = length(vLineCoord);
 
+  float edge = linearstep(1.0, 1.0 - 2.0 / vWidth, sdf) * vColor.a;
+  // Nothing invisible should reach the depth buffer and block what is behind it.
+  if (uBlend == 1 && edge < 0.004) discard;
+
   if (uShadow == 1) {
-    fragColor = vec4(vColor.rgb, linearstep(1.0, 1.0 - 2.0 / vWidth, sdf));
+    fragColor = vec4(vColor.rgb, edge);
     return;
   }
 
@@ -158,7 +177,7 @@ void main () {
   float isBorder = linearstep(threshold.x, threshold.y, sdf);
 
   vec3 rgb = mix(vColor.rgb * shade, uBorderColor.rgb, isBorder * uBorderColor.a);
-  fragColor = vec4(rgb, linearstep(1.0, 1.0 - 2.0 / vWidth, sdf));
+  fragColor = vec4(rgb + dither(gl_FragCoord.xy) / 255.0, edge);
 }`;
 
 export class TrailRenderer {
@@ -195,7 +214,8 @@ export class TrailRenderer {
     gl.uniform1f(u.uWidth, shadow ? width * 1.05 : width);
     gl.uniform1f(u.uFade, style.fade);
     gl.uniform1f(u.uTailFade, shadow ? 0 : style.tailFade);
-    gl.uniform1f(u.uColorMode, style.colorBy === 'random' ? 1 : 0);
+    gl.uniform1f(u.uColorMode, style.colorBy);
+    gl.uniform1i(u.uBlend, style.blend ? 1 : 0);
     gl.uniform1f(u.uFloorY, style.floorY);
     gl.uniform3fv(u.uColor1, style.color1);
     gl.uniform3fv(u.uColor2, style.color2);

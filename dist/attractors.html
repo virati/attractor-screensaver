@@ -267,7 +267,10 @@ const OPTS = {
   speed: num('speed', 1),
   theme: params.get('theme') || 'any',
   attractor: params.get('attractor'),
-  maxPixelRatio: num('dpr', 1.75),
+  // The notebook renders at the full devicePixelRatio; 1.75 clipped that on a
+  // panel scaled past it, costing resolution to save fill rate the quality
+  // ladder is already there to manage.
+  maxPixelRatio: num('dpr', 2),
   hud: params.get('hud') !== '0',
   history: params.get('history') !== '0',
   // On by default: true-black grounds, and dark palettes only unless a light
@@ -276,7 +279,15 @@ const OPTS = {
   // Multi-display: `label` names the window so the compositor can place it,
   // and `slice=i/n` gives each instance a disjoint share of the systems.
   label: params.get('label'),
-  slice: params.get('slice')
+  slice: params.get('slice'),
+  // Off by default. Blending resolves the soft edge at full precision instead
+  // of quantising it to a handful of coverage levels, which should look better
+  // and does not: the joints are separate discs drawn under the segments, and
+  // that only stays invisible while the segments are painted over them
+  // opaquely. Blended, every disc shows through and the trails read as chains
+  // of beads. `blend=1` if you want to see it.
+  blend: flag('blend'),
+  seed: params.has('seed') ? num('seed', 1) : null
 };
 
 function sliceOf(spec) {
@@ -293,8 +304,21 @@ const TRAIL = {};
 if (params.has('width')) TRAIL.width = clamp(num('width', 7), 0.5, 40);
 if (params.has('taper')) TRAIL.fade = clamp(num('taper', 0.35), 0, 2);
 if (params.has('tailFade')) TRAIL.tailFade = clamp(num('tailFade', 0.25), 0, 1);
+if (params.has('colorBy')) TRAIL.colorBy = clamp(num('colorBy', 1), 0, 1);
 
 const el = id => document.getElementById(id);
+
+// `seed` makes a run repeatable: same palette, same camera move, same playlist.
+// Without it two runs cannot be compared, which is what shots of "before" and
+// "after" need.
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
 
 async function boot() {
   // The title is how a Wayland compositor tells one instance from another —
@@ -336,10 +360,12 @@ async function boot() {
     duration: OPTS.duration,
     fadeTime: OPTS.fadeTime,
     theme: OPTS.theme,
+    rng: OPTS.seed === null ? Math.random : mulberry32(OPTS.seed),
     pinned: OPTS.attractor,
     drift,
     trail: Object.keys(TRAIL).length ? TRAIL : null,
     oled: OPTS.oled,
+    blend: OPTS.blend,
     slice: sliceOf(OPTS.slice),
     quality: () => { rung = pendingRung; return LADDER[rung]; },
     onChange: describe
@@ -708,8 +734,26 @@ class Scene {
     gl.clearDepth(1);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-    gl.disable(gl.BLEND);
-    gl.enable(gl.SAMPLE_ALPHA_TO_COVERAGE);
+    // Two ways to resolve the soft edge the SDF produces.
+    //
+    // Alpha-to-coverage turns that alpha into a multisample coverage mask,
+    // which keeps the pass opaque so trails depth-test against each other with
+    // no sorting at all. The cost is that coverage has only as many levels as
+    // the buffer has samples -- four or so -- applied through a fixed dither,
+    // so every cap and joint edge is quantised and stair-steps.
+    //
+    // Blending gives the full range and a genuinely smooth edge. The cost is
+    // order: overlapping trails are composited in draw order rather than depth
+    // order, and sorting a hundred thousand segments a frame is not on. Depth
+    // testing and writing stay on, so the error is confined to the translucent
+    // edges rather than the whole stroke.
+    if (style.blend) {
+      gl.enable(gl.BLEND);
+      gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    } else {
+      gl.disable(gl.BLEND);
+      gl.enable(gl.SAMPLE_ALPHA_TO_COVERAGE);
+    }
 
     if (style.shadow && this.camera.eye[1] > style.floorY) {
       gl.disable(gl.DEPTH_TEST);
@@ -722,7 +766,8 @@ class Scene {
     gl.depthFunc(gl.LEQUAL);
     this.trails.draw(this.sim, this.camera, style, { shadow: false });
 
-    gl.disable(gl.SAMPLE_ALPHA_TO_COVERAGE);
+    if (style.blend) gl.disable(gl.BLEND);
+    else gl.disable(gl.SAMPLE_ALPHA_TO_COVERAGE);
 
     if (style.gridOpacity > 0.002) this.stage.draw(this.camera, style);
 
@@ -1008,7 +1053,7 @@ layout(location = 0) in vec2 corner;   // (0..1, 0..1)
 uniform mat4 uProjView, uTransform;
 uniform sampler2D uState;
 uniform ivec4 uRing;      // steps, particles, head, filled
-uniform int uSegsPerTrail, uMode, uShadow;
+uniform int uSegsPerTrail, uMode, uShadow, uBlend;
 uniform vec2 uResolution; // device pixels
 uniform float uWidth, uFade, uTailFade, uColorMode, uFloorY;
 uniform vec3 uColor1, uColor2, uBackground, uShadowColor;
@@ -1109,10 +1154,17 @@ void main () {
   if (uShadow == 1) {
     vColor = vec4(uShadowColor, 1.0);
   } else {
+    // uColorMode weighs the particle's seed radius against its index. The
+    // notebook offers the same two ends of this and nothing between; a value
+    // in between is the one thing here it cannot do.
     float coord = mix(quasirandom(float(particle) + 0.5).z, pn, uColorMode);
     vec3 rgb = mix(uColor1, uColor2, coord);
-    rgb = mix(rgb, uBackground, uTailFade * pow(1.0 - param, 0.7));
-    vColor = vec4(rgb, 1.0);
+    // The tail fade stays in the colour rather than moving into alpha. Carrying
+    // it in alpha reads better in theory and is what the notebook does, but the
+    // joints here are separate discs drawn under the segments, and that only
+    // hides them while the segments are opaque. A translucent stroke lets every
+    // disc show through and the trail turns into a chain of beads.
+    vColor = vec4(mix(rgb, uBackground, uTailFade * pow(1.0 - param, 0.7)), 1.0);
   }
 }`;
 
@@ -1124,7 +1176,7 @@ in vec2 vLineCoord;
 in float vWidth, vShade;
 in vec4 vColor;
 
-uniform int uShadow;
+uniform int uShadow, uBlend;
 uniform float uShading;
 uniform vec2 uBorderWidth;
 uniform vec4 uBorderColor;
@@ -1133,11 +1185,23 @@ out vec4 fragColor;
 
 float linearstep (float a, float b, float x) { return clamp((x - a) / (b - a), 0.0, 1.0); }
 
+// Interleaved gradient noise, under half a step of 8-bit colour. The tail fade
+// walks a long, low-contrast ramp into the background, and against a true-black
+// ground the dark end of that ramp has very few values left, so it bands in
+// visible rings. Dithering turns the step into noise below the eye's threshold.
+float dither (vec2 p) {
+  return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715)))) - 0.5;
+}
+
 void main () {
   float sdf = length(vLineCoord);
 
+  float edge = linearstep(1.0, 1.0 - 2.0 / vWidth, sdf) * vColor.a;
+  // Nothing invisible should reach the depth buffer and block what is behind it.
+  if (uBlend == 1 && edge < 0.004) discard;
+
   if (uShadow == 1) {
-    fragColor = vec4(vColor.rgb, linearstep(1.0, 1.0 - 2.0 / vWidth, sdf));
+    fragColor = vec4(vColor.rgb, edge);
     return;
   }
 
@@ -1150,7 +1214,7 @@ void main () {
   float isBorder = linearstep(threshold.x, threshold.y, sdf);
 
   vec3 rgb = mix(vColor.rgb * shade, uBorderColor.rgb, isBorder * uBorderColor.a);
-  fragColor = vec4(rgb, linearstep(1.0, 1.0 - 2.0 / vWidth, sdf));
+  fragColor = vec4(rgb + dither(gl_FragCoord.xy) / 255.0, edge);
 }`;
 
 class TrailRenderer {
@@ -1187,7 +1251,8 @@ class TrailRenderer {
     gl.uniform1f(u.uWidth, shadow ? width * 1.05 : width);
     gl.uniform1f(u.uFade, style.fade);
     gl.uniform1f(u.uTailFade, shadow ? 0 : style.tailFade);
-    gl.uniform1f(u.uColorMode, style.colorBy === 'random' ? 1 : 0);
+    gl.uniform1f(u.uColorMode, style.colorBy);
+    gl.uniform1i(u.uBlend, style.blend ? 1 : 0);
     gl.uniform1f(u.uFloorY, style.floorY);
     gl.uniform3fv(u.uColor1, style.color1);
     gl.uniform3fv(u.uColor2, style.color2);
@@ -1669,6 +1734,7 @@ class Director {
     trail = null,
     oled = true,
     slice = null,
+    blend = true,
     onChange = () => {}
   } = {}) {
     this.scene = scene;
@@ -1680,6 +1746,7 @@ class Director {
     this.drift = drift;
     this.trail = trail;
     this.oled = oled;
+    this.blend = blend;
     this.onChange = onChange;
     this.paused = false;
     this.margin = 1.35;
@@ -1741,7 +1808,10 @@ class Director {
       width: lerp(4, 11, r() ** 1.5),
       fade: lerp(0.1, 0.6, r()),
       tailFade: lerp(0.08, 0.42, r()),
-      colorBy: r() < 0.7 ? 'radius' : 'random',
+      // 0 colours by the particle's seed radius, 1 by its index. The notebook
+      // offers only these two ends; a value between them is ours.
+      colorBy: r() < 0.7 ? 0 : 1,
+      blend: this.blend,
       floorY: -0.5,
       roomHalf: 2,
       pixelRatio: 1

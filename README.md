@@ -112,12 +112,15 @@ bin/attractors --idle duration=30 theme=dark particles=2048
 | `particles` | `1024` | trajectories simulated in parallel |
 | `steps` | `180` | samples per trail, i.e. how long the comet tails are (2–512) |
 | `speed` | `1` | integration steps per display frame |
-| `dpr` | `1.75` | device-pixel-ratio ceiling |
+| `dpr` | `2` | device-pixel-ratio ceiling |
 | `hud` | `1` | `0` hides the name and equations |
 | `history` | `1` | `0` hides the history panel |
 | `continuous` | — | drift the parameters instead of holding them fixed |
 | `sweep` | `0.12` | drift amplitude, as a fraction of each published value |
 | `sweepPeriod` | `55` | seconds for the base drift cycle |
+| `seed` | — | repeat a run exactly: same palette, camera and playlist |
+| `blend` | — | `1` blends the soft edge instead of alpha-to-coverage; see below |
+| `colorBy` | random 0 or 1 | `0` colours by the particle's seed radius, `1` by its index |
 | `width` | random 4–11 | stroke thickness, in pixels |
 | `taper` | random 0.1–0.6 | how sharply the stroke narrows toward the tail |
 | `tailFade` | random 0.08–0.42 | how quickly the tail fades out |
@@ -154,6 +157,41 @@ against 7.8% after.
 `--bright` (or `oled=0`) restores the original behaviour. An explicit
 `theme=paper` is still honoured either way — asking for a light ground outright
 is taken to mean you want one.
+
+## Edges and colour, against the notebook
+
+The notebook these came from looks smoother, and it is worth writing down what
+was tried about that, because most of it did not work.
+
+**The colour scheme is not the difference.** The notebook offers the same two
+choices as this does and defaults to the same one — its `colorBy` prop is a
+`vec4` but only ever gets `[0,0,1,0]` or `[0,0,0,1]`, colouring by the
+particle's seed radius or by its index. `colorBy` here now takes any value
+between the two, which the notebook cannot do, but that is a new knob rather
+than a repair.
+
+**The edges are the difference, and it cannot be had cheaply.** This resolves
+the soft edge of its stroke with alpha-to-coverage, which turns the alpha into a
+multisample coverage mask. That keeps the pass opaque, so trails depth-test
+against each other with no sorting at all — but coverage has only about as many
+levels as the buffer has samples, applied through a fixed dither, so every cap
+and joint edge is quantised and stair-steps.
+
+`blend=1` swaps that for real alpha blending, which resolves the edge at full
+precision. It looks worse. The joints are separate discs drawn underneath the
+segments, and they stay invisible only while the segments are painted over them
+opaquely; blended, every disc shows through and the trails read as chains of
+beads. Moving the tail fade into alpha, which is what the notebook does, makes
+it worse again for the same reason. Both were tried and backed out. Doing this
+properly needs a depth pre-pass so only the nearest fragment blends, which is a
+second pass over every segment.
+
+**Banding.** The tail fade mixes toward the background, and against a true-black
+ground the dark end of that ramp has few 8-bit values left to walk. There is now
+a sub-step ordered dither on the output, which is correct and free — it raises
+the distinct-colour count of a frame by about 4% — but on a dense attractor
+there is no large smooth gradient for it to fix, and at 5x zoom it is not
+visible. It will matter on a sparse, long-tailed setting.
 
 ## The trail
 

@@ -63,6 +63,7 @@ export class Director {
     trail = null,
     oled = true,
     slice = null,
+    blend = true,
     onChange = () => {}
   } = {}) {
     this.scene = scene;
@@ -74,6 +75,7 @@ export class Director {
     this.drift = drift;
     this.trail = trail;
     this.oled = oled;
+    this.blend = blend;
     this.onChange = onChange;
     this.paused = false;
     this.margin = 1.35;
@@ -135,7 +137,10 @@ export class Director {
       width: lerp(4, 11, r() ** 1.5),
       fade: lerp(0.1, 0.6, r()),
       tailFade: lerp(0.08, 0.42, r()),
-      colorBy: r() < 0.7 ? 'radius' : 'random',
+      // 0 colours by the particle's seed radius, 1 by its index. The notebook
+      // offers only these two ends; a value between them is ours.
+      colorBy: r() < 0.7 ? 0 : 1,
+      blend: this.blend,
       floorY: -0.5,
       roomHalf: 2,
       pixelRatio: 1

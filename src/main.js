@@ -30,7 +30,10 @@ const OPTS = {
   speed: num('speed', 1),
   theme: params.get('theme') || 'any',
   attractor: params.get('attractor'),
-  maxPixelRatio: num('dpr', 1.75),
+  // The notebook renders at the full devicePixelRatio; 1.75 clipped that on a
+  // panel scaled past it, costing resolution to save fill rate the quality
+  // ladder is already there to manage.
+  maxPixelRatio: num('dpr', 2),
   hud: params.get('hud') !== '0',
   history: params.get('history') !== '0',
   // On by default: true-black grounds, and dark palettes only unless a light
@@ -39,7 +42,15 @@ const OPTS = {
   // Multi-display: `label` names the window so the compositor can place it,
   // and `slice=i/n` gives each instance a disjoint share of the systems.
   label: params.get('label'),
-  slice: params.get('slice')
+  slice: params.get('slice'),
+  // Off by default. Blending resolves the soft edge at full precision instead
+  // of quantising it to a handful of coverage levels, which should look better
+  // and does not: the joints are separate discs drawn under the segments, and
+  // that only stays invisible while the segments are painted over them
+  // opaquely. Blended, every disc shows through and the trails read as chains
+  // of beads. `blend=1` if you want to see it.
+  blend: flag('blend'),
+  seed: params.has('seed') ? num('seed', 1) : null
 };
 
 function sliceOf(spec) {
@@ -56,8 +67,21 @@ const TRAIL = {};
 if (params.has('width')) TRAIL.width = clamp(num('width', 7), 0.5, 40);
 if (params.has('taper')) TRAIL.fade = clamp(num('taper', 0.35), 0, 2);
 if (params.has('tailFade')) TRAIL.tailFade = clamp(num('tailFade', 0.25), 0, 1);
+if (params.has('colorBy')) TRAIL.colorBy = clamp(num('colorBy', 1), 0, 1);
 
 const el = id => document.getElementById(id);
+
+// `seed` makes a run repeatable: same palette, same camera move, same playlist.
+// Without it two runs cannot be compared, which is what shots of "before" and
+// "after" need.
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
 
 export async function boot() {
   // The title is how a Wayland compositor tells one instance from another —
@@ -99,10 +123,12 @@ export async function boot() {
     duration: OPTS.duration,
     fadeTime: OPTS.fadeTime,
     theme: OPTS.theme,
+    rng: OPTS.seed === null ? Math.random : mulberry32(OPTS.seed),
     pinned: OPTS.attractor,
     drift,
     trail: Object.keys(TRAIL).length ? TRAIL : null,
     oled: OPTS.oled,
+    blend: OPTS.blend,
     slice: sliceOf(OPTS.slice),
     quality: () => { rung = pendingRung; return LADDER[rung]; },
     onChange: describe
