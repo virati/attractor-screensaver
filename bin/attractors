@@ -35,8 +35,6 @@ command -v "$PY_BIN" >/dev/null || { echo "python3 is required" >&2; exit 1; }
 
 BROWSER_PIDS=()
 PROFILE_DIRS=()
-KWIN_SCRIPT=""
-KWIN_SCRIPT_NAME=""
 PROFILE_GLOB="/tmp/attractors-profile-"
 QDBUS="$(command -v qdbus-qt6 || command -v qdbus6 || command -v qdbus || true)"
 
@@ -85,11 +83,6 @@ reap() {  # reap <pattern>
 }
 
 cleanup() {
-  if [[ -n "$KWIN_SCRIPT_NAME" && -n "$QDBUS" ]]; then
-    "$QDBUS" org.kde.KWin /Scripting org.kde.kwin.Scripting.unloadScript \
-      "$KWIN_SCRIPT_NAME" >/dev/null 2>&1 || true
-  fi
-  [[ -n "$KWIN_SCRIPT" ]] && rm -f "$KWIN_SCRIPT"
   for d in ${PROFILE_DIRS[@]+"${PROFILE_DIRS[@]}"}; do reap "$d"; done
   for pid in ${BROWSER_PIDS[@]+"${BROWSER_PIDS[@]}"}; do kill "$pid" 2>/dev/null || true; done
   kill "$SERVER_PID" 2>/dev/null || true
@@ -181,86 +174,17 @@ launch() {  # launch <url> <class>
   return 1
 }
 
-# --- placement ---------------------------------------------------------------
-# A Wayland client cannot put itself on a chosen monitor, so the compositor has
-# to. This loads a KWin script for the life of the session that matches each
-# window by title and pins it to one output's logical rectangle. Nothing is
-# written to kwinrulesrc, so existing window rules are untouched, and unloading
-# the script on exit leaves no trace.
-place_windows() {  # place_windows <rects-json>
-  # ATTRACTORS_PLACE=0 leaves the windows wherever the compositor puts them,
-  # which is the only option on a compositor that is not KWin.
-  [[ "${ATTRACTORS_PLACE:-1}" != "0" ]] || { echo "placement disabled" >&2; return; }
-  [[ -n "$QDBUS" ]] || { echo "qdbus not found; windows will not be placed" >&2; return; }
-  KWIN_SCRIPT="$(mktemp -t attractors-place-XXXXXX.js)"
-  cat > "$KWIN_SCRIPT" <<EOF
-var RECTS = $1;
-var FULLSCREEN = $([[ $KIOSK -eq 1 ]] && echo true || echo false);
-
-// Idempotent: a window already fullscreen on its own output, or already sitting
-// at its rectangle, is left alone. Without that guard the activation signal
-// below would re-fullscreen on every focus change and the screen would flicker.
-// Moving the window and fullscreening it have to be two separate passes.
-// Done together, the fullscreen lands on whichever output the window was
-// already on, because the geometry change has not taken effect yet -- so the
-// second window would be fullscreened back on top of the first and one display
-// was left showing nothing. The move happens first; only once the window
-// reports it is on the right output does it get fullscreened, on the next
-// event. outputChanged is what provides that event.
-function place(w) {
-  if (!w || !w.caption) return;
-  var r = RECTS[w.caption];
-  if (!r) return;
-
-  w.keepAbove = true;
-  w.skipTaskbar = true;
-  w.skipSwitcher = true;
-  w.skipPager = true;
-
-  var onRight = w.output && w.output.name === r.output;
-  if (!onRight) {
-    if (w.fullScreen) w.fullScreen = false;
-    w.frameGeometry = { x: r.x, y: r.y, width: r.w, height: r.h };
-    return;
-  }
-  if (FULLSCREEN) {
-    if (!w.fullScreen) w.fullScreen = true;
-  } else if (w.frameGeometry && w.frameGeometry.width !== r.w) {
-    w.frameGeometry = { x: r.x, y: r.y, width: r.w, height: r.h };
-  }
-}
-
-// Every event re-places every window, not just the one that fired. Chromium
-// sets its real title a beat after the window is mapped, so hooking a single
-// window's captionChanged races against that title arriving -- whichever window
-// wins the race gets placed and the other is left where it landed.
-function placeAll() {
-  var list = workspace.windowList ? workspace.windowList()
-           : (workspace.clientList ? workspace.clientList() : []);
-  for (var i = 0; i < list.length; i++) place(list[i]);
-}
-
-function hook(w) {
-  if (w.captionChanged && w.captionChanged.connect) w.captionChanged.connect(placeAll);
-  if (w.outputChanged && w.outputChanged.connect) w.outputChanged.connect(placeAll);
-  if (w.frameGeometryChanged && w.frameGeometryChanged.connect) {
-    w.frameGeometryChanged.connect(placeAll);
-  }
-  placeAll();
-}
-
-var added = workspace.windowAdded || workspace.clientAdded;
-if (added && added.connect) added.connect(hook);
-if (workspace.windowActivated && workspace.windowActivated.connect) {
-  workspace.windowActivated.connect(placeAll);
-}
-placeAll();
-EOF
-  KWIN_SCRIPT_NAME="attractors-place-$$"
-  "$QDBUS" org.kde.KWin /Scripting org.kde.kwin.Scripting.loadScript \
-    "$KWIN_SCRIPT" "$KWIN_SCRIPT_NAME" >/dev/null 2>&1 || true
-  "$QDBUS" org.kde.KWin /Scripting org.kde.kwin.Scripting.start >/dev/null 2>&1 || true
-}
+# --- placement ----------------------------------------------------------------
+# A Wayland client cannot choose its monitor, so the compositor has to be told.
+# That is done with declarative window rules, which install.sh writes into
+# kwinrulesrc from the current display layout; KWin applies them when the window
+# is mapped. The rules match on window class, which is why each instance is
+# launched with its own --class, and not on the title: the title is set by the
+# page after it loads, which is far too late for a rule that runs at map time.
+#
+# The earlier approach loaded a KWin script over D-Bus. It is gone because it
+# never ran: isScriptLoaded reported true, but a script that tried to move every
+# window on the desktop moved nothing.
 
 # --- go ----------------------------------------------------------------------
 if [[ $ALL_DISPLAYS -eq 1 ]]; then
@@ -278,17 +202,12 @@ if [[ $ALL_DISPLAYS -eq 1 ]]; then
   COUNT=${#OUTPUTS[@]}
   [[ $COUNT -gt 0 ]] || { echo "no enabled outputs found" >&2; exit 1; }
 
-  RECTS="{"
   for i in "${!OUTPUTS[@]}"; do
     IFS=$'\t' read -r NAME X Y W H <<< "${OUTPUTS[$i]}"
     LABEL=$((i + 1))
-    [[ $i -gt 0 ]] && RECTS+=","
-    RECTS+="\"Attractors ${LABEL}\":{\"x\":${X},\"y\":${Y},\"w\":${W},\"h\":${H},\"output\":\"${NAME}\"}"
     echo "display ${LABEL}: ${NAME} at ${X},${Y} ${W}x${H}  (systems ${i}/${COUNT})"
   done
-  RECTS+="}"
 
-  place_windows "$RECTS"
   # Each instance ignores input for a few seconds after it loads. The windows
   # come up one at a time, and whatever the compositor does while the later ones
   # are mapping was enough to dismiss the earlier ones: one display would be

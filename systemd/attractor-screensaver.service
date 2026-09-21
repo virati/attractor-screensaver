@@ -4,11 +4,9 @@ PartOf=graphical-session.target
 
 [Service]
 Type=simple
-# --all-displays is deliberately not used here yet: the compositor-side window
-# placement it needs does not take effect on this KWin, and without it the
-# second window lands on top of the first. One reliable window beats two
-# unreliable ones. Add --all-displays back when placement is fixed.
-ExecStart=%h/Projects/attractor-screensaver/bin/attractors --idle
+# Placement comes from the window rules install.sh writes, matched on the
+# --class each instance is launched with.
+ExecStart=%h/Projects/attractor-screensaver/bin/attractors --idle --all-displays
 # SIGTERM goes to the launcher alone so its own cleanup can run in order.
 KillMode=mixed
 TimeoutStopSec=20

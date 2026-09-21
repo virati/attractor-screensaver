@@ -48,35 +48,31 @@ touched.
 
 ## More than one display
 
-**This does not work yet on KWin.** `--all-displays` starts one browser per
-monitor and they do start, but the compositor-side placement below has no
-effect here, so both windows land wherever KWin puts them and one ends up on
-top of the other. The installed screensaver runs a single window until this is
-fixed. What is known: the placement script loads and `isScriptLoaded` reports
-true, but a script that tiles every window with a matching title moves nothing
-while both windows are up, through any of `workspace.windowList()`,
-`workspace.windows`, `workspace.stackingOrder` or `workspace.clientList()`. The
-next thing to try is declarative rules in `kwinrulesrc`, which the compositor
-applies when the window is mapped rather than from a script reacting to signals.
-
-## More than one display, as designed
-
 `--all-displays` runs one instance per monitor. Each gets its own share of the
 systems — the list is sliced on its canonical order before being shuffled, so
 two displays are never showing the same attractor at the same time.
 
 A Wayland client cannot choose which monitor it opens on, so the compositor has
-to be told. The launcher loads a KWin script for the life of the session that
-matches each window by title and pins it to one output's logical rectangle.
-Nothing is written to `kwinrulesrc`, so your own window rules are untouched, and
-unloading the script on exit leaves no trace. `ATTRACTORS_PLACE=0` skips that
-step, which is the only option on a compositor that is not KWin.
+to be told. `install.sh` writes one KWin window rule per display into
+`kwinrulesrc`, generated from the current layout, forcing position and size.
+Re-run it after changing monitors or rearranging them. Rules you already had are
+kept; only ids beginning `attractors-` are rewritten.
 
-Two things there are worth knowing. The launches are staggered by two seconds:
-fired at once, two `flatpak run` invocations race through instance setup and one
-of them dies. And placement re-runs for every window on every window event
-rather than hooking one window's title change — Chromium sets its real title a
-beat after the window is mapped, and hooking a single window races that.
+Three things there cost a while to find.
+
+The rules match on **window class**, which is why each instance is launched with
+its own `--class`. Matching on the title cannot work: a rule is evaluated when
+the window is mapped, and the title is set by the page after it loads.
+
+The rule value that works is **1, Force**. With 2, Apply, the window did not
+land. Both were tried in the same run, one per display, to see which took.
+
+The first version of all this used a KWin script loaded over D-Bus instead.
+It never ran. `isScriptLoaded` returned true, but a script that tried to move
+every window on the desktop — no title filter at all — moved nothing, through
+any of `workspace.windowList()`, `workspace.windows`, `workspace.stackingOrder`
+or `workspace.clientList()`. Every window therefore landed wherever KWin chose,
+which usually meant both on one screen or behind whatever was already open.
 
 This writes two systemd user units. `attractor-idle.service` runs `swayidle`,
 which listens on `ext-idle-notify-v1` (KWin 6 speaks it, as do the wlroots

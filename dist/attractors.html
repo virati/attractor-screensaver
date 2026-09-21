@@ -1064,7 +1064,7 @@ uniform float uWidth, uFade, uTailFade, uColorMode, uFloorY;
 uniform vec3 uColor1, uColor2, uBackground, uShadowColor;
 
 out vec2 vLineCoord;
-out float vWidth, vShade;
+out float vWidth, vShade, vBorderMix;
 out vec4 vColor;
 
 vec3 quasirandom (float n) {
@@ -1129,6 +1129,7 @@ void main () {
     z = mix(zA, zB, along);
     vLineCoord = vec2(0.0, across);
     vShade = across;
+    vBorderMix = 1.0;
   } else {
     vec2 c = corner * 2.0 - 1.0;
     param = paramA;
@@ -1149,6 +1150,14 @@ void main () {
       if (length(delta) > 1e-5) tangent = normalize(delta);
     }
     vShade = dot(c, vec2(-tangent.y, tangent.x));
+
+    // The border ink is drawn at the edge of whatever primitive is being
+    // rasterised, and a joint is a whole disc, so it was getting a complete
+    // dark ring -- one per trail sample, which reads as a black seam chopping
+    // the trail into segments. The ink is wanted where the disc forms the side
+    // of the stroke and not where it butts up against the segments either side,
+    // so it fades out along the direction of travel.
+    vBorderMix = clamp(1.0 - abs(dot(c, tangent)) * 1.7, 0.0, 1.0);
   }
 
   // Per-trail depth nudge, so trails that overlap exactly do not z-fight.
@@ -1178,7 +1187,7 @@ precision highp float;
 precision highp int;
 
 in vec2 vLineCoord;
-in float vWidth, vShade;
+in float vWidth, vShade, vBorderMix;
 in vec4 vColor;
 
 uniform int uShadow, uBlend;
@@ -1218,7 +1227,7 @@ void main () {
   vec2 threshold = 1.0 - uBorderWidth / vWidth;
   float isBorder = linearstep(threshold.x, threshold.y, sdf);
 
-  vec3 rgb = mix(vColor.rgb * shade, uBorderColor.rgb, isBorder * uBorderColor.a);
+  vec3 rgb = mix(vColor.rgb * shade, uBorderColor.rgb, isBorder * uBorderColor.a * vBorderMix);
   fragColor = vec4(rgb + dither(gl_FragCoord.xy) / 255.0, edge);
 }`;
 
