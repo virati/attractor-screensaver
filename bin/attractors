@@ -83,6 +83,7 @@ reap() {  # reap <pattern>
 }
 
 cleanup() {
+  [[ -n "${PLACE_LOADED:-}" ]] && kwin_call unloadScript s "$PLACE_NAME"
   for d in ${PROFILE_DIRS[@]+"${PROFILE_DIRS[@]}"}; do reap "$d"; done
   for pid in ${BROWSER_PIDS[@]+"${BROWSER_PIDS[@]}"}; do kill "$pid" 2>/dev/null || true; done
   kill "$SERVER_PID" 2>/dev/null || true
@@ -138,9 +139,14 @@ launch() {  # launch <url> <class>
   profile="$(mktemp -d -t attractors-profile-XXXXXX)"
   PROFILE_DIRS+=("$profile")
 
+  # --class does not become the Wayland app_id. Chromium derives that from the
+  # URL and the profile directory name -- chrome-<url>-<profile-dir> -- and the
+  # URL carries a port that changes every run, so the profile directory is the
+  # only part of it worth matching a window rule against. Hence a named one.
   local args=(
     "--app=$url"
     "--user-data-dir=$profile"
+    "--profile-directory=$klass"
     "--class=$klass"
     --no-first-run
     --no-default-browser-check
@@ -175,6 +181,70 @@ launch() {  # launch <url> <class>
 }
 
 # --- placement ----------------------------------------------------------------
+# A Wayland client cannot choose its monitor, so KWin is asked to do it with a
+# script that matches each window by title and pins it to one output.
+#
+# Two things about this took a long time to find. KWin will not load a script
+# from /tmp -- loadScript returns an id and isScriptLoaded says true, but it
+# never runs -- so the file has to live under the data directory. And KWin runs
+# on the host, where this home is /var/home, so the path it is given has to be
+# the real one.
+#
+# The move and the fullscreen are separate steps: fullscreening a window that
+# has not landed on its output yet just fullscreens it where it already was.
+PLACE_NAME="attractor-place"
+PLACE_SCRIPT="${XDG_DATA_HOME:-$HOME/.local/share}/${PLACE_NAME}.js"
+PLACE_SCRIPT="$(readlink -f "$PLACE_SCRIPT" 2>/dev/null || echo "$PLACE_SCRIPT")"
+[[ "$PLACE_SCRIPT" == /home/* && -d /var/home ]] && PLACE_SCRIPT="/var$PLACE_SCRIPT"
+
+kwin_call() {  # kwin_call <method> [signature] [args…]
+  if command -v busctl >/dev/null; then
+    busctl --user call org.kde.KWin /Scripting org.kde.kwin.Scripting "$@" >/dev/null 2>&1
+  elif [[ -n "$QDBUS" ]]; then
+    shift_sig=("$@"); "$QDBUS" org.kde.KWin /Scripting \
+      "org.kde.kwin.Scripting.${shift_sig[0]}" "${shift_sig[@]:2}" >/dev/null 2>&1
+  fi
+}
+
+place_windows() {  # place_windows <rects-json>
+  [[ "${ATTRACTORS_PLACE:-1}" != "0" ]] || { echo "placement disabled" >&2; return; }
+  mkdir -p "$(dirname "$PLACE_SCRIPT")"
+  cat > "$PLACE_SCRIPT" <<EOF
+var RECTS = $1;
+function place(w) {
+  if (!w || !w.caption) return;
+  var r = RECTS[w.caption];
+  if (!r) return;
+  w.keepAbove = true;
+  w.skipTaskbar = true;
+  w.skipSwitcher = true;
+  w.skipPager = true;
+  if (w.output && w.output.name === r.out) {
+    if (!w.fullScreen) w.fullScreen = true;
+    return;
+  }
+  if (w.fullScreen) w.fullScreen = false;
+  w.frameGeometry = { x: r.x, y: r.y, width: r.w, height: r.h };
+}
+function sweep() {
+  var l = workspace.windowList();
+  for (var i = 0; i < l.length; i++) place(l[i]);
+}
+workspace.windowAdded.connect(function (w) {
+  place(w);
+  // The title arrives after the window does, and the output arrives after the
+  // move, so both have to be waited for rather than assumed.
+  if (w.captionChanged) w.captionChanged.connect(sweep);
+  if (w.outputChanged) w.outputChanged.connect(sweep);
+});
+sweep();
+EOF
+  kwin_call unloadScript s "$PLACE_NAME"
+  kwin_call loadScript ss "$PLACE_SCRIPT" "$PLACE_NAME"
+  kwin_call start
+  PLACE_LOADED=1
+}
+
 # A Wayland client cannot choose its monitor, so the compositor has to be told.
 # That is done with declarative window rules, which install.sh writes into
 # kwinrulesrc from the current display layout; KWin applies them when the window
@@ -202,11 +272,16 @@ if [[ $ALL_DISPLAYS -eq 1 ]]; then
   COUNT=${#OUTPUTS[@]}
   [[ $COUNT -gt 0 ]] || { echo "no enabled outputs found" >&2; exit 1; }
 
+  RECTS="{"
   for i in "${!OUTPUTS[@]}"; do
     IFS=$'\t' read -r NAME X Y W H <<< "${OUTPUTS[$i]}"
     LABEL=$((i + 1))
+    [[ $i -gt 0 ]] && RECTS+=","
+    RECTS+="\"Attractors ${LABEL}\":{\"x\":${X},\"y\":${Y},\"w\":${W},\"h\":${H},\"out\":\"${NAME}\"}"
     echo "display ${LABEL}: ${NAME} at ${X},${Y} ${W}x${H}  (systems ${i}/${COUNT})"
   done
+  RECTS+="}"
+  place_windows "$RECTS"
 
   # Each instance ignores input for a few seconds after it loads. The windows
   # come up one at a time, and whatever the compositor does while the later ones

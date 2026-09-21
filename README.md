@@ -53,26 +53,36 @@ systems — the list is sliced on its canonical order before being shuffled, so
 two displays are never showing the same attractor at the same time.
 
 A Wayland client cannot choose which monitor it opens on, so the compositor has
-to be told. `install.sh` writes one KWin window rule per display into
-`kwinrulesrc`, generated from the current layout, forcing position and size.
-Re-run it after changing monitors or rearranging them. Rules you already had are
-kept; only ids beginning `attractors-` are rewritten.
+to be told. The launcher writes a KWin script from the display layout and loads
+it over D-Bus for the life of the session. It matches each window by title and
+moves it to one output, then fullscreens it. Because the script is written at
+start-up there is nothing to re-run when monitors change.
 
-Three things there cost a while to find.
+Four things there cost a long time, and all four look obvious afterwards.
 
-The rules match on **window class**, which is why each instance is launched with
-its own `--class`. Matching on the title cannot work: a rule is evaluated when
-the window is mapped, and the title is set by the page after it loads.
+**KWin will not load a script from `/tmp`.** `loadScript` returns an id and
+`isScriptLoaded` answers true, and the script never runs. It has to live under
+the data directory. This is why an earlier version appeared to prove that KWin
+scripting did not work at all.
 
-The rule value that works is **1, Force**. With 2, Apply, the window did not
-land. Both were tried in the same run, one per display, to see which took.
+**KWin runs on the host**, where this home is `/var/home`, so the path handed to
+it has to be the real one rather than the `/home` symlink.
 
-The first version of all this used a KWin script loaded over D-Bus instead.
-It never ran. `isScriptLoaded` returned true, but a script that tried to move
-every window on the desktop — no title filter at all — moved nothing, through
-any of `workspace.windowList()`, `workspace.windows`, `workspace.stackingOrder`
-or `workspace.clientList()`. Every window therefore landed wherever KWin chose,
-which usually meant both on one screen or behind whatever was already open.
+**A tiling script will undo the placement.** krohnkite re-tiles windows as they
+appear and dragged the screensaver straight back into a tile, which looked
+exactly like the placement never happening. `install.sh` adds `Attractors` to
+its `ignoreTitle`. Another tiler would need the same by hand.
+
+**Window rules cannot do this job.** Matching on class fails because Chromium
+derives an app window's Wayland app_id from the URL, which carries a port that
+changes every run, and `--class` does not affect it. Matching on title fails
+because a rule is evaluated when the window maps and the title is set by the
+page after it loads. The script works precisely because it can wait for
+`captionChanged`.
+
+The move and the fullscreen are also separate steps: fullscreening a window
+that has not landed on its output yet just fullscreens it where it already was,
+which put both windows on one screen.
 
 This writes two systemd user units. `attractor-idle.service` runs `swayidle`,
 which listens on `ext-idle-notify-v1` (KWin 6 speaks it, as do the wlroots
