@@ -48,6 +48,19 @@ touched.
 
 ## More than one display
 
+**This does not work yet on KWin.** `--all-displays` starts one browser per
+monitor and they do start, but the compositor-side placement below has no
+effect here, so both windows land wherever KWin puts them and one ends up on
+top of the other. The installed screensaver runs a single window until this is
+fixed. What is known: the placement script loads and `isScriptLoaded` reports
+true, but a script that tiles every window with a matching title moves nothing
+while both windows are up, through any of `workspace.windowList()`,
+`workspace.windows`, `workspace.stackingOrder` or `workspace.clientList()`. The
+next thing to try is declarative rules in `kwinrulesrc`, which the compositor
+applies when the window is mapped rather than from a script reacting to signals.
+
+## More than one display, as designed
+
 `--all-displays` runs one instance per monitor. Each gets its own share of the
 systems — the list is sliced on its canonical order before being shuffled, so
 two displays are never showing the same attractor at the same time.

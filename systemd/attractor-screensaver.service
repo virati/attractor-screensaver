@@ -4,5 +4,17 @@ PartOf=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=%h/Projects/attractor-screensaver/bin/attractors --idle --all-displays
+# --all-displays is deliberately not used here yet: the compositor-side window
+# placement it needs does not take effect on this KWin, and without it the
+# second window lands on top of the first. One reliable window beats two
+# unreliable ones. Add --all-displays back when placement is fixed.
+ExecStart=%h/Projects/attractor-screensaver/bin/attractors --idle
+# SIGTERM goes to the launcher alone so its own cleanup can run in order.
+KillMode=mixed
+TimeoutStopSec=20
+# Belt and braces. Flatpak runs the browser in its own systemd scope, not in
+# this unit's cgroup, so if the launcher is ever killed outright rather than
+# stopped, nothing else would reap the windows and they would pile up across
+# idle cycles. The leading - means a miss is not an error.
+ExecStopPost=-/usr/bin/pkill -x chrome -f /tmp/attractors-profile-
 Restart=no

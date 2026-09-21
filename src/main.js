@@ -50,7 +50,12 @@ const OPTS = {
   // opaquely. Blended, every disc shows through and the trails read as chains
   // of beads. `blend=1` if you want to see it.
   blend: flag('blend'),
-  seed: params.has('seed') ? num('seed', 1) : null
+  seed: params.has('seed') ? num('seed', 1) : null,
+  // Seconds to ignore input for after loading. With one window a moment is
+  // plenty; with several, the later ones are still being mapped and placed
+  // while the earlier ones are already listening, and that was enough to
+  // dismiss them.
+  arm: Math.max(0, num('arm', 0.7))
 };
 
 function sliceOf(spec) {
@@ -241,7 +246,7 @@ export async function boot() {
   // --- input ---------------------------------------------------------------
   if (OPTS.idle) {
     document.body.classList.add('idle');
-    armIdleExit();
+    armIdleExit(OPTS.arm * 1000);
   } else {
     armControls(canvas, director, scene, history);
   }
@@ -250,12 +255,12 @@ export async function boot() {
 }
 
 // Screensaver mode: the first real sign of life dismisses the window.
-function armIdleExit() {
+function armIdleExit(holdOff = 700) {
   const armedAt = performance.now();
   let origin = null;
   let quitting = false;
   const quit = () => {
-    if (quitting || performance.now() - armedAt < 700) return;
+    if (quitting || performance.now() - armedAt < holdOff) return;
     quitting = true;
     // The launcher's static server shuts down on /__quit and takes the browser
     // with it; window.close() covers the case where the page is run standalone.
