@@ -5,6 +5,7 @@ import { Simulation } from './simulation.js';
 import { TrailRenderer } from './lines.js';
 import { Stage } from './stage.js';
 import { Camera } from './camera.js';
+import { PostFX } from './post.js';
 
 const VEIL_FRAG = `#version 300 es
 precision highp float;
@@ -22,6 +23,9 @@ export class Scene {
     this.quad = fullscreenTriangle(gl);
     this.veil = program(gl, FULLSCREEN_VERT, VEIL_FRAG);
     this.style = null;
+    // Offscreen multisampling and bloom; `post: null` draws straight to the
+    // canvas as before.
+    this.post = opts.post === null ? null : new PostFX(gl, opts.post || {});
   }
 
   render({ veil = 0 } = {}) {
@@ -29,8 +33,11 @@ export class Scene {
     const style = this.style;
     if (!style) return;
 
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+    if (this.post) this.post.begin();
+    else {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+    }
     gl.clearColor(style.background[0], style.background[1], style.background[2], 1);
     gl.clearDepth(1);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
@@ -59,13 +66,13 @@ export class Scene {
     if (style.shadow && this.camera.eye[1] > style.floorY) {
       gl.disable(gl.DEPTH_TEST);
       gl.depthMask(false);
-      this.trails.draw(this.sim, this.camera, style, { shadow: true });
+      this.trails.draw(this.sim, this.camera, style, { shadow: true, dither: !this.post });
       gl.depthMask(true);
     }
 
     gl.enable(gl.DEPTH_TEST);
     gl.depthFunc(gl.LEQUAL);
-    this.trails.draw(this.sim, this.camera, style, { shadow: false });
+    this.trails.draw(this.sim, this.camera, style, { shadow: false, dither: !this.post });
 
     if (style.blend) gl.disable(gl.BLEND);
     else gl.disable(gl.SAMPLE_ALPHA_TO_COVERAGE);
@@ -83,9 +90,12 @@ export class Scene {
       gl.bindVertexArray(null);
       gl.disable(gl.BLEND);
     }
+
+    if (this.post) this.post.end({ glow: style.palette.dark });
   }
 
   destroy() {
+    if (this.post) this.post.destroy();
     this.sim.destroy();
     this.trails.destroy();
     this.stage.destroy();

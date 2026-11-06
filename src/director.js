@@ -64,6 +64,8 @@ export class Director {
     oled = true,
     slice = null,
     set = 'classic',
+    palette = null,
+    zoom = 1,
     blend = true,
     onChange = () => {}
   } = {}) {
@@ -77,6 +79,8 @@ export class Director {
     this.trail = trail;
     this.oled = oled;
     this.blend = blend;
+    this.palette = palette;
+    this.zoom = zoom;
     this.onChange = onChange;
     this.paused = false;
     this.margin = 1.35;
@@ -104,6 +108,10 @@ export class Director {
   get current() { return this.playlist[this.index]; }
 
   palettePool() {
+    if (this.palette) {
+      const named = PALETTES.filter(p => p.name.toLowerCase() === this.palette.toLowerCase());
+      if (named.length) return named;
+    }
     if (this.theme === 'dark') return PALETTES.filter(p => p.dark);
     // An explicit request for paper is an explicit request for a light ground,
     // so it is honoured; oledSafe then leaves those palettes alone.
@@ -161,7 +169,7 @@ export class Director {
 
     const { radius, bottom } = occupancy(
       this.scene.sim.readPositions(), style.transform, this.scene.camera.target);
-    this.margin = lerp(1.22, 1.55, this.rng());
+    this.margin = lerp(1.22, 1.55, this.rng()) / this.zoom;
     this.scene.camera.frameRadius(radius, this.margin);
 
     // Keep the floor just under the subject and grow the room to match, so a

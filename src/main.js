@@ -14,6 +14,23 @@ const num = (key, fallback) => {
 };
 const flag = key => params.has(key) && params.get(key) !== '0' && params.get(key) !== 'false';
 
+// Named looks: a palette, a framing and a set of pinned trail settings.
+// `notebook` is Reusser's own rendering -- white paper, flat fat strokes in the
+// blue-to-mint ramp, no ink, no shading, no room, framed from inside the shape.
+// Anything given explicitly on the query string still wins.
+const LOOKS = {
+  notebook: {
+    palette: 'Notebook',
+    oled: false,
+    zoom: 1.9,
+    trail: {
+      width: 22, fade: 0.45, tailFade: 0, colorBy: 0,
+      shading: 0, borderOpacity: 0, gridOpacity: 0, shadow: false
+    }
+  }
+};
+const LOOK = LOOKS[params.get('look')] || {};
+
 const OPTS = {
   idle: flag('idle'),
   duration: num('duration', 300),
@@ -40,7 +57,11 @@ const OPTS = {
   history: params.get('history') !== '0',
   // On by default: true-black grounds, and dark palettes only unless a light
   // one was asked for outright. `oled=0` restores the designed backgrounds.
-  oled: params.get('oled') !== '0',
+  oled: params.has('oled') ? params.get('oled') !== '0' : LOOK.oled ?? true,
+  // Pin one palette by name (see src/palettes.js), and frame tighter (>1) or
+  // looser (<1) than the director would.
+  palette: params.get('palette') || LOOK.palette || null,
+  zoom: Math.max(0.2, num('zoom', LOOK.zoom ?? 1)),
   // Multi-display: `label` names the window so the compositor can place it,
   // and `slice=i/n` gives each instance a disjoint share of the systems.
   label: params.get('label'),
@@ -52,6 +73,13 @@ const OPTS = {
   // opaquely. Blended, every disc shows through and the trails read as chains
   // of beads. `blend=1` if you want to see it.
   blend: flag('blend'),
+  // The scene is drawn offscreen at the GPU's highest multisample count (msaa=
+  // to cap it), then bloomed. post=0 draws straight to the canvas as before;
+  // bloom=0 keeps the antialiasing and drops the glow.
+  post: params.get('post') !== '0',
+  msaa: Math.max(0, num('msaa', 0)),
+  bloom: Math.max(0, num('bloom', 0.55)),
+  bloomThreshold: Math.max(0, num('bloomThreshold', 0.3)),
   seed: params.has('seed') ? num('seed', 1) : null,
   // Seconds to ignore input for after loading. With one window a moment is
   // plenty; with several, the later ones are still being mapped and placed
@@ -70,7 +98,7 @@ function sliceOf(spec) {
 // The look of the trail is rerolled per shot unless it is pinned here. Only the
 // keys actually given are overridden, so `width=2` still gets a random taper.
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-const TRAIL = {};
+const TRAIL = { ...(LOOK.trail || {}) };
 if (params.has('width')) TRAIL.width = clamp(num('width', 7), 0.5, 40);
 if (params.has('taper')) TRAIL.fade = clamp(num('taper', 0.35), 0, 2);
 if (params.has('tailFade')) TRAIL.tailFade = clamp(num('tailFade', 0.25), 0, 1);
@@ -96,7 +124,9 @@ export async function boot() {
   if (OPTS.label) document.title = `Attractors ${OPTS.label}`;
 
   const canvas = el('gl');
-  const gl = createContext(canvas, { antialias: true });
+  // With post-processing the canvas is only ever a fullscreen copy target, so
+  // its own multisample buffer would be memory spent on nothing.
+  const gl = createContext(canvas, { antialias: !OPTS.post });
 
   // Quality ladder, walked only between shots so changes are never visible.
   //
@@ -114,7 +144,10 @@ export async function boot() {
   let pendingRung = 3;
   let ceilingRung = LADDER.length - 1;
 
-  const scene = new Scene(gl, LADDER[rung]);
+  const scene = new Scene(gl, {
+    ...LADDER[rung],
+    post: OPTS.post ? { samples: OPTS.msaa, bloom: OPTS.bloom, threshold: OPTS.bloomThreshold } : null
+  });
 
   // --continuous: walk the parameters instead of holding them fixed.
   const drift = OPTS.continuous
@@ -136,6 +169,8 @@ export async function boot() {
     drift,
     trail: Object.keys(TRAIL).length ? TRAIL : null,
     oled: OPTS.oled,
+    palette: OPTS.palette,
+    zoom: OPTS.zoom,
     blend: OPTS.blend,
     slice: sliceOf(OPTS.slice),
     quality: () => { rung = pendingRung; return LADDER[rung]; },

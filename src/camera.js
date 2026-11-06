@@ -59,7 +59,9 @@ export class Camera {
     const vertical = this.fov / 2;
     const horizontal = Math.atan(Math.tan(vertical) * this.aspect);
     const half = Math.min(vertical, horizontal);
-    this.distance = Math.max(1.4, Math.min(9, (radius / Math.sin(half)) * margin));
+    // The floor of 0.6 keeps the eye outside the near plane of most shapes even
+    // when a zoomed-in look frames from inside the attractor.
+    this.distance = Math.max(0.6, Math.min(9, (radius / Math.sin(half)) * margin));
   }
 
   orbitBy(dx, dy) {

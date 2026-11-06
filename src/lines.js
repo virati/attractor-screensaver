@@ -157,7 +157,7 @@ in float vWidth, vShade, vBorderMix;
 in vec4 vColor;
 
 uniform int uShadow, uBlend;
-uniform float uShading;
+uniform float uShading, uDither;
 uniform vec2 uBorderWidth;
 uniform vec4 uBorderColor;
 
@@ -194,7 +194,7 @@ void main () {
   float isBorder = linearstep(threshold.x, threshold.y, sdf);
 
   vec3 rgb = mix(vColor.rgb * shade, uBorderColor.rgb, isBorder * uBorderColor.a * vBorderMix);
-  fragColor = vec4(rgb + dither(gl_FragCoord.xy) / 255.0, edge);
+  fragColor = vec4(rgb + uDither * dither(gl_FragCoord.xy) / 255.0, edge);
 }`;
 
 export class TrailRenderer {
@@ -212,7 +212,9 @@ export class TrailRenderer {
     gl.bindVertexArray(null);
   }
 
-  draw(sim, camera, style, { shadow = false } = {}) {
+  // `dither`: off when drawing into the post-processing target, which dithers
+  // once, at the point it actually quantises to 8 bits.
+  draw(sim, camera, style, { shadow = false, dither = true } = {}) {
     const gl = this.gl;
     const { u, program: p } = this.prog;
     const dpr = style.pixelRatio;
@@ -240,6 +242,7 @@ export class TrailRenderer {
     gl.uniform3fv(u.uShadowColor, style.shadowColor);
     gl.uniform1i(u.uShadow, shadow ? 1 : 0);
     gl.uniform1f(u.uShading, style.shading);
+    gl.uniform1f(u.uDither, dither ? 1 : 0);
     gl.uniform2f(u.uBorderWidth,
       2.0 * style.borderWidth * dpr + 0.75,
       2.0 * style.borderWidth * dpr - 0.75);

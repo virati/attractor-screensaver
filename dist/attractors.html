@@ -251,6 +251,23 @@ const num = (key, fallback) => {
 };
 const flag = key => params.has(key) && params.get(key) !== '0' && params.get(key) !== 'false';
 
+// Named looks: a palette, a framing and a set of pinned trail settings.
+// `notebook` is Reusser's own rendering -- white paper, flat fat strokes in the
+// blue-to-mint ramp, no ink, no shading, no room, framed from inside the shape.
+// Anything given explicitly on the query string still wins.
+const LOOKS = {
+  notebook: {
+    palette: 'Notebook',
+    oled: false,
+    zoom: 1.9,
+    trail: {
+      width: 22, fade: 0.45, tailFade: 0, colorBy: 0,
+      shading: 0, borderOpacity: 0, gridOpacity: 0, shadow: false
+    }
+  }
+};
+const LOOK = LOOKS[params.get('look')] || {};
+
 const OPTS = {
   idle: flag('idle'),
   duration: num('duration', 300),
@@ -277,7 +294,11 @@ const OPTS = {
   history: params.get('history') !== '0',
   // On by default: true-black grounds, and dark palettes only unless a light
   // one was asked for outright. `oled=0` restores the designed backgrounds.
-  oled: params.get('oled') !== '0',
+  oled: params.has('oled') ? params.get('oled') !== '0' : LOOK.oled ?? true,
+  // Pin one palette by name (see src/palettes.js), and frame tighter (>1) or
+  // looser (<1) than the director would.
+  palette: params.get('palette') || LOOK.palette || null,
+  zoom: Math.max(0.2, num('zoom', LOOK.zoom ?? 1)),
   // Multi-display: `label` names the window so the compositor can place it,
   // and `slice=i/n` gives each instance a disjoint share of the systems.
   label: params.get('label'),
@@ -289,6 +310,13 @@ const OPTS = {
   // opaquely. Blended, every disc shows through and the trails read as chains
   // of beads. `blend=1` if you want to see it.
   blend: flag('blend'),
+  // The scene is drawn offscreen at the GPU's highest multisample count (msaa=
+  // to cap it), then bloomed. post=0 draws straight to the canvas as before;
+  // bloom=0 keeps the antialiasing and drops the glow.
+  post: params.get('post') !== '0',
+  msaa: Math.max(0, num('msaa', 0)),
+  bloom: Math.max(0, num('bloom', 0.55)),
+  bloomThreshold: Math.max(0, num('bloomThreshold', 0.3)),
   seed: params.has('seed') ? num('seed', 1) : null,
   // Seconds to ignore input for after loading. With one window a moment is
   // plenty; with several, the later ones are still being mapped and placed
@@ -307,7 +335,7 @@ function sliceOf(spec) {
 // The look of the trail is rerolled per shot unless it is pinned here. Only the
 // keys actually given are overridden, so `width=2` still gets a random taper.
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-const TRAIL = {};
+const TRAIL = { ...(LOOK.trail || {}) };
 if (params.has('width')) TRAIL.width = clamp(num('width', 7), 0.5, 40);
 if (params.has('taper')) TRAIL.fade = clamp(num('taper', 0.35), 0, 2);
 if (params.has('tailFade')) TRAIL.tailFade = clamp(num('tailFade', 0.25), 0, 1);
@@ -333,7 +361,9 @@ async function boot() {
   if (OPTS.label) document.title = `Attractors ${OPTS.label}`;
 
   const canvas = el('gl');
-  const gl = createContext(canvas, { antialias: true });
+  // With post-processing the canvas is only ever a fullscreen copy target, so
+  // its own multisample buffer would be memory spent on nothing.
+  const gl = createContext(canvas, { antialias: !OPTS.post });
 
   // Quality ladder, walked only between shots so changes are never visible.
   //
@@ -351,7 +381,10 @@ async function boot() {
   let pendingRung = 3;
   let ceilingRung = LADDER.length - 1;
 
-  const scene = new Scene(gl, LADDER[rung]);
+  const scene = new Scene(gl, {
+    ...LADDER[rung],
+    post: OPTS.post ? { samples: OPTS.msaa, bloom: OPTS.bloom, threshold: OPTS.bloomThreshold } : null
+  });
 
   // --continuous: walk the parameters instead of holding them fixed.
   const drift = OPTS.continuous
@@ -373,6 +406,8 @@ async function boot() {
     drift,
     trail: Object.keys(TRAIL).length ? TRAIL : null,
     oled: OPTS.oled,
+    palette: OPTS.palette,
+    zoom: OPTS.zoom,
     blend: OPTS.blend,
     slice: sliceOf(OPTS.slice),
     quality: () => { rung = pendingRung; return LADDER[rung]; },
@@ -712,6 +747,7 @@ const { Simulation } = __req('simulation.js');
 const { TrailRenderer } = __req('lines.js');
 const { Stage } = __req('stage.js');
 const { Camera } = __req('camera.js');
+const { PostFX } = __req('post.js');
 
 const VEIL_FRAG = `#version 300 es
 precision highp float;
@@ -729,6 +765,9 @@ class Scene {
     this.quad = fullscreenTriangle(gl);
     this.veil = program(gl, FULLSCREEN_VERT, VEIL_FRAG);
     this.style = null;
+    // Offscreen multisampling and bloom; `post: null` draws straight to the
+    // canvas as before.
+    this.post = opts.post === null ? null : new PostFX(gl, opts.post || {});
   }
 
   render({ veil = 0 } = {}) {
@@ -736,8 +775,11 @@ class Scene {
     const style = this.style;
     if (!style) return;
 
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+    if (this.post) this.post.begin();
+    else {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+    }
     gl.clearColor(style.background[0], style.background[1], style.background[2], 1);
     gl.clearDepth(1);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
@@ -766,13 +808,13 @@ class Scene {
     if (style.shadow && this.camera.eye[1] > style.floorY) {
       gl.disable(gl.DEPTH_TEST);
       gl.depthMask(false);
-      this.trails.draw(this.sim, this.camera, style, { shadow: true });
+      this.trails.draw(this.sim, this.camera, style, { shadow: true, dither: !this.post });
       gl.depthMask(true);
     }
 
     gl.enable(gl.DEPTH_TEST);
     gl.depthFunc(gl.LEQUAL);
-    this.trails.draw(this.sim, this.camera, style, { shadow: false });
+    this.trails.draw(this.sim, this.camera, style, { shadow: false, dither: !this.post });
 
     if (style.blend) gl.disable(gl.BLEND);
     else gl.disable(gl.SAMPLE_ALPHA_TO_COVERAGE);
@@ -790,9 +832,12 @@ class Scene {
       gl.bindVertexArray(null);
       gl.disable(gl.BLEND);
     }
+
+    if (this.post) this.post.end({ glow: style.palette.dark });
   }
 
   destroy() {
+    if (this.post) this.post.destroy();
     this.sim.destroy();
     this.trails.destroy();
     this.stage.destroy();
@@ -1216,7 +1261,7 @@ in float vWidth, vShade, vBorderMix;
 in vec4 vColor;
 
 uniform int uShadow, uBlend;
-uniform float uShading;
+uniform float uShading, uDither;
 uniform vec2 uBorderWidth;
 uniform vec4 uBorderColor;
 
@@ -1253,7 +1298,7 @@ void main () {
   float isBorder = linearstep(threshold.x, threshold.y, sdf);
 
   vec3 rgb = mix(vColor.rgb * shade, uBorderColor.rgb, isBorder * uBorderColor.a * vBorderMix);
-  fragColor = vec4(rgb + dither(gl_FragCoord.xy) / 255.0, edge);
+  fragColor = vec4(rgb + uDither * dither(gl_FragCoord.xy) / 255.0, edge);
 }`;
 
 class TrailRenderer {
@@ -1271,7 +1316,9 @@ class TrailRenderer {
     gl.bindVertexArray(null);
   }
 
-  draw(sim, camera, style, { shadow = false } = {}) {
+  // `dither`: off when drawing into the post-processing target, which dithers
+  // once, at the point it actually quantises to 8 bits.
+  draw(sim, camera, style, { shadow = false, dither = true } = {}) {
     const gl = this.gl;
     const { u, program: p } = this.prog;
     const dpr = style.pixelRatio;
@@ -1299,6 +1346,7 @@ class TrailRenderer {
     gl.uniform3fv(u.uShadowColor, style.shadowColor);
     gl.uniform1i(u.uShadow, shadow ? 1 : 0);
     gl.uniform1f(u.uShading, style.shading);
+    gl.uniform1f(u.uDither, dither ? 1 : 0);
     gl.uniform2f(u.uBorderWidth,
       2.0 * style.borderWidth * dpr + 0.75,
       2.0 * style.borderWidth * dpr - 0.75);
@@ -1689,7 +1737,9 @@ class Camera {
     const vertical = this.fov / 2;
     const horizontal = Math.atan(Math.tan(vertical) * this.aspect);
     const half = Math.min(vertical, horizontal);
-    this.distance = Math.max(1.4, Math.min(9, (radius / Math.sin(half)) * margin));
+    // The floor of 0.6 keeps the eye outside the near plane of most shapes even
+    // when a zoomed-in look frames from inside the attractor.
+    this.distance = Math.max(0.6, Math.min(9, (radius / Math.sin(half)) * margin));
   }
 
   orbitBy(dx, dy) {
@@ -1704,6 +1754,233 @@ class Camera {
 }
 
 Object.assign(__exports, { Camera });
+
+});
+
+__def("post.js", function (__exports, __req) {
+// Post-processing: the scene is drawn into an offscreen multisample target,
+// resolved, given a bloom, and composited onto the canvas.
+//
+// The multisample target is the antialiasing. Trails resolve their soft edge
+// with alpha-to-coverage, and coverage has only as many levels as the buffer
+// has samples. The canvas's own buffer gets whatever the browser picks, usually
+// four; an offscreen renderbuffer can ask for the GPU's maximum, typically 8 or
+// 16, which is two to four times the edge resolution with the pass still
+// opaque and still depth-sorted for free. It is also half-float, so the dark
+// end of a tail fade is not already quantised to 8 bits before the bloom and
+// the final dither see it.
+//
+// The bloom is the usual mip chain (Jimenez, "Next Generation Post Processing
+// in Call of Duty: Advanced Warfare", 2014): a soft-thresholded prefilter at
+// half resolution, a 13-tap downsample to each smaller level, then a tent
+// upsample added back up the chain. It is skipped on light palettes, where a
+// glow only greys out the paper.
+
+const { program, fullscreenTriangle, FULLSCREEN_VERT } = __req('glutil.js');
+
+const HEADER = `#version 300 es
+precision highp float;
+in vec2 uv;
+out vec4 fragColor;
+uniform sampler2D uSrc;
+uniform vec2 uTexel;   // 1 / source size
+`;
+
+// Luminance above uThreshold passes, with a quadratic knee below it so the
+// cut-off is not a visible edge on a gradient.
+const PREFILTER = HEADER + `
+uniform float uThreshold, uKnee;
+void main () {
+  vec3 c = texture(uSrc, uv).rgb;
+  float l = max(c.r, max(c.g, c.b));
+  float soft = clamp(l - uThreshold + uKnee, 0.0, 2.0 * uKnee);
+  soft = soft * soft / (4.0 * uKnee + 1e-4);
+  float w = max(soft, l - uThreshold) / max(l, 1e-4);
+  fragColor = vec4(c * w, 1.0);
+}`;
+
+const DOWN = HEADER + `
+vec3 at (vec2 o) { return texture(uSrc, uv + o * uTexel).rgb; }
+void main () {
+  vec3 a = at(vec2(-2, 2)), b = at(vec2(0, 2)), c = at(vec2(2, 2));
+  vec3 d = at(vec2(-2, 0)), e = at(vec2(0, 0)), f = at(vec2(2, 0));
+  vec3 g = at(vec2(-2, -2)), h = at(vec2(0, -2)), i = at(vec2(2, -2));
+  vec3 j = at(vec2(-1, 1)), k = at(vec2(1, 1)), l = at(vec2(-1, -1)), m = at(vec2(1, -1));
+  vec3 s = e * 0.125 + (a + c + g + i) * 0.03125 + (b + d + f + h) * 0.0625 + (j + k + l + m) * 0.125;
+  fragColor = vec4(s, 1.0);
+}`;
+
+const UP = HEADER + `
+uniform float uRadius;
+vec3 at (vec2 o) { return texture(uSrc, uv + o * uTexel * uRadius).rgb; }
+void main () {
+  vec3 s = at(vec2(0, 0)) * 4.0
+    + (at(vec2(-1, 0)) + at(vec2(1, 0)) + at(vec2(0, -1)) + at(vec2(0, 1))) * 2.0
+    + at(vec2(-1, -1)) + at(vec2(1, -1)) + at(vec2(-1, 1)) + at(vec2(1, 1));
+  fragColor = vec4(s / 16.0, 1.0);
+}`;
+
+const COMPOSITE = HEADER + `
+uniform sampler2D uBloom;
+uniform float uStrength;
+// Interleaved gradient noise, under half a step of 8-bit colour: this is the
+// pass that finally quantises to the canvas, so it is the one that dithers.
+float dither (vec2 p) {
+  return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715)))) - 0.5;
+}
+void main () {
+  vec3 c = texture(uSrc, uv).rgb + uStrength * texture(uBloom, uv).rgb;
+  fragColor = vec4(c + dither(gl_FragCoord.xy) / 255.0, 1.0);
+}`;
+
+function texture(gl, w, h) {
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA16F, w, h);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  const fbo = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  return { tex, fbo, w, h, destroy() { gl.deleteTexture(tex); gl.deleteFramebuffer(fbo); } };
+}
+
+class PostFX {
+  // `samples`: multisample count, clamped to what the GPU allows (0 = its max).
+  // `bloom`: strength, 0 for none. `threshold`: brightness where glow starts.
+  constructor(gl, { samples = 0, bloom = 0.55, threshold = 0.3, radius = 1, levels = 6 } = {}) {
+    this.gl = gl;
+    const max = gl.getParameter(gl.MAX_SAMPLES);
+    this.samples = Math.max(1, Math.min(max, samples > 0 ? samples : max));
+    this.bloom = bloom;
+    this.threshold = threshold;
+    this.radius = radius;
+    this.levels = levels;
+    this.quad = fullscreenTriangle(gl);
+    this.prefilter = program(gl, FULLSCREEN_VERT, PREFILTER);
+    this.down = program(gl, FULLSCREEN_VERT, DOWN);
+    this.up = program(gl, FULLSCREEN_VERT, UP);
+    this.composite = program(gl, FULLSCREEN_VERT, COMPOSITE);
+    this.width = 0;
+    this.height = 0;
+    this.targets = null;
+  }
+
+  allocate(w, h) {
+    const gl = this.gl;
+    this.release();
+    const color = gl.createRenderbuffer();
+    gl.bindRenderbuffer(gl.RENDERBUFFER, color);
+    gl.renderbufferStorageMultisample(gl.RENDERBUFFER, this.samples, gl.RGBA16F, w, h);
+    const depth = gl.createRenderbuffer();
+    gl.bindRenderbuffer(gl.RENDERBUFFER, depth);
+    gl.renderbufferStorageMultisample(gl.RENDERBUFFER, this.samples, gl.DEPTH_COMPONENT24, w, h);
+    const msaa = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, msaa);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, color);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depth);
+    const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+    if (status !== gl.FRAMEBUFFER_COMPLETE) throw new Error(`Incomplete MSAA framebuffer: 0x${status.toString(16)}`);
+
+    const resolved = texture(gl, w, h);
+    const chain = [];
+    let cw = w, ch = h;
+    for (let i = 0; i < this.levels; i++) {
+      cw = Math.max(1, cw >> 1);
+      ch = Math.max(1, ch >> 1);
+      chain.push(texture(gl, cw, ch));
+      if (cw === 1 && ch === 1) break;
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    this.targets = { color, depth, msaa, resolved, chain };
+    this.width = w;
+    this.height = h;
+  }
+
+  release() {
+    const t = this.targets;
+    if (!t) return;
+    const gl = this.gl;
+    gl.deleteRenderbuffer(t.color);
+    gl.deleteRenderbuffer(t.depth);
+    gl.deleteFramebuffer(t.msaa);
+    t.resolved.destroy();
+    for (const c of t.chain) c.destroy();
+    this.targets = null;
+  }
+
+  // Bind the multisample target; the scene draws into it as if it were the canvas.
+  begin() {
+    const gl = this.gl;
+    const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
+    if (w !== this.width || h !== this.height || !this.targets) this.allocate(w, h);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.targets.msaa);
+    gl.viewport(0, 0, w, h);
+  }
+
+  pass(prog, src, dst, uniforms = {}) {
+    const gl = this.gl;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, dst ? dst.fbo : null);
+    gl.viewport(0, 0, dst ? dst.w : this.width, dst ? dst.h : this.height);
+    gl.useProgram(prog.program);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, src.tex);
+    gl.uniform1i(prog.u.uSrc, 0);
+    gl.uniform2f(prog.u.uTexel, 1 / src.w, 1 / src.h);
+    for (const [k, v] of Object.entries(uniforms)) if (prog.u[k]) gl.uniform1f(prog.u[k], v);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+
+  // Resolve, bloom, and composite onto the canvas.
+  end({ glow = true } = {}) {
+    const gl = this.gl;
+    const { msaa, resolved, chain } = this.targets;
+    const w = this.width, h = this.height;
+
+    gl.disable(gl.DEPTH_TEST);
+    gl.disable(gl.BLEND);
+    gl.disable(gl.SAMPLE_ALPHA_TO_COVERAGE);
+
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, msaa);
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, resolved.fbo);
+    gl.blitFramebuffer(0, 0, w, h, 0, 0, w, h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+
+    gl.bindVertexArray(this.quad.vao);
+    const strength = glow ? this.bloom : 0;
+    if (strength > 0) {
+      this.pass(this.prefilter, resolved, chain[0],
+        { uThreshold: this.threshold, uKnee: Math.max(0.05, this.threshold * 0.5) });
+      for (let i = 1; i < chain.length; i++) this.pass(this.down, chain[i - 1], chain[i]);
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.ONE, gl.ONE);
+      for (let i = chain.length - 1; i > 0; i--) {
+        this.pass(this.up, chain[i], chain[i - 1], { uRadius: this.radius });
+      }
+      gl.disable(gl.BLEND);
+    }
+
+    gl.useProgram(this.composite.program);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, chain[0].tex);
+    gl.uniform1i(this.composite.u.uBloom, 1);
+    // Each level was added in at full weight on the way up; divide that back out.
+    this.pass(this.composite, resolved, null, { uStrength: strength / chain.length });
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindVertexArray(null);
+  }
+
+  destroy() {
+    this.release();
+    this.quad.destroy();
+    for (const p of [this.prefilter, this.down, this.up, this.composite]) p.destroy();
+  }
+}
+
+Object.assign(__exports, { PostFX });
 
 });
 
@@ -1774,6 +2051,8 @@ class Director {
     oled = true,
     slice = null,
     set = 'classic',
+    palette = null,
+    zoom = 1,
     blend = true,
     onChange = () => {}
   } = {}) {
@@ -1787,6 +2066,8 @@ class Director {
     this.trail = trail;
     this.oled = oled;
     this.blend = blend;
+    this.palette = palette;
+    this.zoom = zoom;
     this.onChange = onChange;
     this.paused = false;
     this.margin = 1.35;
@@ -1814,6 +2095,10 @@ class Director {
   get current() { return this.playlist[this.index]; }
 
   palettePool() {
+    if (this.palette) {
+      const named = PALETTES.filter(p => p.name.toLowerCase() === this.palette.toLowerCase());
+      if (named.length) return named;
+    }
     if (this.theme === 'dark') return PALETTES.filter(p => p.dark);
     // An explicit request for paper is an explicit request for a light ground,
     // so it is honoured; oledSafe then leaves those palettes alone.
@@ -1871,7 +2156,7 @@ class Director {
 
     const { radius, bottom } = occupancy(
       this.scene.sim.readPositions(), style.transform, this.scene.camera.target);
-    this.margin = lerp(1.22, 1.55, this.rng());
+    this.margin = lerp(1.22, 1.55, this.rng()) / this.zoom;
     this.scene.camera.frameRadius(radius, this.margin);
 
     // Keep the floor just under the subject and grow the room to match, so a

@@ -175,6 +175,13 @@ bin/attractors --idle duration=30 theme=dark particles=2048
 | `oled` | `1` | `0` restores the designed backgrounds and the light palettes |
 | `attractor` | — | pin the opening system, e.g. `attractor=Lorenz` |
 | `set` | `classic` | `lie` cycles the Lie brackets (below), `all` both |
+| `look` | — | `notebook`: Reusser's rendering — white paper, flat fat strokes, framed from inside |
+| `palette` | random | pin one by name, e.g. `palette=Notebook` (see `src/palettes.js`) |
+| `zoom` | `1` | frame tighter (>1) or looser (<1) than the director would |
+| `msaa` | GPU max | multisample count for the offscreen target; caps it |
+| `bloom` | `0.55` | glow strength on dark palettes; `0` for none |
+| `bloomThreshold` | `0.3` | brightness where the glow starts |
+| `post` | `1` | `0` draws straight to the canvas: browser MSAA, no bloom |
 | `particles` | `1024` | trajectories simulated in parallel |
 | `steps` | `180` | samples per trail, i.e. how long the comet tails are (2–512) |
 | `speed` | `1` | integration steps per display frame |
