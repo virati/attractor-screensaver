@@ -37,6 +37,13 @@ vec4 clipOf (int particle, int slot) {
   return uProjView * world;
 }
 
+// The simulation writes w = 0 into a sample it had to re-seed rather than
+// integrate, so the segment arriving at it is a jump, not a piece of trail.
+bool reseeded (int particle, int slot) {
+  int column = (uRing.z + 1 + slot) % uRing.x;
+  return texelFetch(uState, ivec2(column, particle), 0).w < 0.5;
+}
+
 float widthAt (float param) {
   return uWidth * exp(-3.0 * uFade * (1.0 - param));
 }
@@ -48,6 +55,7 @@ void main () {
 
   // Slots older than what has actually been simulated are collapsed away.
   bool alive = slot >= steps - uRing.w;
+  if (uMode == 0 && reseeded(particle, slot + 1)) alive = false;
 
   float denom = float(steps - 1);
   float paramA = float(slot) / denom;

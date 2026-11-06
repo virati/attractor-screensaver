@@ -3,3 +3,5 @@ notebook.js
 attractors.json
 *.log
 .DS_Store
+.venv/
+__pycache__/

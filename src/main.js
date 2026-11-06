@@ -3,7 +3,6 @@
 import { createContext } from './glutil.js';
 import { Scene } from './scene.js';
 import { Director } from './director.js';
-import { ATTRACTORS } from './attractors.js';
 import { Drift } from './drift.js';
 import { HistoryPanel } from './history-panel.js';
 import { equations, parameterLine, parameterValues, reference } from './format.js';
@@ -30,6 +29,9 @@ const OPTS = {
   speed: num('speed', 1),
   theme: params.get('theme') || 'any',
   attractor: params.get('attractor'),
+  // Which systems to cycle: `classic` (Reusser's), `lie` (Lie brackets of
+  // dysts pairs, built by tools/lie_pairs.py) or `all`.
+  set: params.get('set') || 'classic',
   // The notebook renders at the full devicePixelRatio; 1.75 clipped that on a
   // panel scaled past it, costing resolution to save fill rate the quality
   // ladder is already there to manage.
@@ -130,6 +132,7 @@ export async function boot() {
     theme: OPTS.theme,
     rng: OPTS.seed === null ? Math.random : mulberry32(OPTS.seed),
     pinned: OPTS.attractor,
+    set: OPTS.set,
     drift,
     trail: Object.keys(TRAIL).length ? TRAIL : null,
     oled: OPTS.oled,
@@ -149,7 +152,7 @@ export async function boot() {
     el('params').textContent = parameterLine(attractor);
     el('ref').textContent = reference(attractor);
     el('counter').textContent =
-      `${String(dir.index + 1).padStart(2, '0')} / ${ATTRACTORS.length}`;
+      `${String(dir.index + 1).padStart(2, '0')} / ${dir.playlist.length}`;
     el('palette').textContent = style.palette.name;
     if (history) history.show(attractor);
   }

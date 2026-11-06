@@ -1,0 +1,4 @@
+[submodule "third_party/autoLie"]
+	path = third_party/autoLie
+	url = https://github.com/virati/autoLie
+	branch = lie-bracket-codegen

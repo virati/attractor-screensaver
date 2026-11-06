@@ -98,6 +98,52 @@ journalctl --user -u attractor-idle -u attractor-screensaver -f
 
 Run `install.sh` on the host, not inside a toolbox or container.
 
+## Lie brackets of dysts systems
+
+Pick any two of the 3-D flows in [dysts](https://github.com/williamgilpin/dysts)
+and watch their Lie bracket
+
+    [f, g](x) = (∂f/∂x) g(x) − (∂g/∂x) f(x)
+
+as a system of its own:
+
+```sh
+bin/attractors --bracket Rossler SprottA    # build it if needed, hold it on screen
+bin/attractors --lie                        # cycle every bracket built so far
+```
+
+The bracket is computed with [autoLie](https://github.com/virati/autoLie)
+(a submodule; see `third_party/`). `tools/lie_pairs.py` traces both
+right-hand sides to sympy, forms the bracket in closed form, prints it as GLSL
+and refuses it unless it agrees with autoLie's autograd bracket on the
+attractor. Then it runs the field through the same RK4 the shader uses, to pick
+a time step, a seed and a view, and compiles the shader with
+`glslangValidator`.
+
+```sh
+python tools/lie_pairs.py list                # the 81 dysts flows that trace cleanly
+python tools/lie_pairs.py add Hadley Tsucs2   # build and keep one
+python tools/lie_pairs.py search --count 10   # keep random pairs that come out chaotic
+python tools/lie_pairs.py remove Hadley Tsucs2
+```
+
+Most brackets do not have an attractor. 48 of the 81 systems have constant
+divergence, and since div [f, g] = g·∇(div f) − f·∇(div g), any two of those
+bracket to a volume-preserving field, which cannot attract anything. Most of
+the rest bracket to cubic fields that run off to infinity. Of 120 pairs drawn
+from the other 33, 16 had a bounded bracket. An unbounded one is kept anyway
+when you ask for it by name: [g, f] (the same curves run backwards) is tried
+first, and failing that, particles are re-seeded near f's attractor whenever
+they stray, so you see the bracket's flow where it matters. The history panel
+says which you are looking at.
+
+Setup, once:
+
+```sh
+git submodule update --init
+uv venv .venv && uv pip install --python .venv/bin/python -r tools/requirements-lie.txt
+```
+
 ## Controls
 
 Interactive mode only — in `--idle` mode any input dismisses the screensaver.
@@ -128,6 +174,7 @@ bin/attractors --idle duration=30 theme=dark particles=2048
 | `theme` | `any` | `dark`, `paper`, or `any` |
 | `oled` | `1` | `0` restores the designed backgrounds and the light palettes |
 | `attractor` | — | pin the opening system, e.g. `attractor=Lorenz` |
+| `set` | `classic` | `lie` cycles the Lie brackets (below), `all` both |
 | `particles` | `1024` | trajectories simulated in parallel |
 | `steps` | `180` | samples per trail, i.e. how long the comet tails are (2–512) |
 | `speed` | `1` | integration steps per display frame |
@@ -307,6 +354,8 @@ the camera into the next county.
 ```
 index.html                 page shell, overlay, styling
 src/attractors.js          the 43 systems (generated)
+src/lie-attractors.js      Lie brackets of dysts pairs (generated)
+src/catalog.js             the named sets: classic, lie, all
 src/simulation.js          state texture, RK4 integrator, spin-up
 src/lines.js               instanced trail renderer
 src/stage.js               the grid room and floor
@@ -320,6 +369,9 @@ bin/attractors             kiosk launcher
 bin/serve.py               static server with a /__quit endpoint
 tools/gen-attractors.mjs   regenerate src/attractors.js from the notebook
 tools/build-single.mjs     bundle to dist/attractors.html
+tools/lie_pairs.py         build Lie brackets of dysts pairs with autoLie
+tools/lie-pairs.json       the brackets kept so far (source of the JS)
+third_party/autoLie        submodule: Lie derivatives and brackets
 ```
 
 To re-derive the attractor table from the source notebook:

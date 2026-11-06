@@ -19,6 +19,7 @@ export function mount({
   theme = 'dark',
   continuous = false,
   oled = true,
+  set = 'classic',
   onChange = () => {},
   onVeil = () => {}
 }) {
@@ -41,6 +42,7 @@ export function mount({
     theme,
     drift: continuous ? new Drift() : null,
     oled,
+    set,
     quality: () => LADDER[pendingRung],
     onChange: (attractor, style, dir) => onChange({
       name: attractor.name,
@@ -50,7 +52,7 @@ export function mount({
       // Background notes, for a host page that wants to show them: `origin`,
       // `text` (2-3 paragraphs), `sources`, and `caveat` where the attribution
       // is shakier than the rest.
-      history: HISTORY[attractor.name] || null,
+      history: attractor.history || HISTORY[attractor.name] || null,
       palette: style.palette.name,
       index: dir.index,
       total: dir.playlist.length

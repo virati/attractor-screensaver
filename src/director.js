@@ -1,7 +1,7 @@
 // Runs the show: shuffles through the attractors, dresses each one in a
 // different palette and camera move, and cross-fades between them.
 
-import { ATTRACTORS, byName } from './attractors.js';
+import { catalog, byName } from './catalog.js';
 import { PALETTES, oledSafe } from './palettes.js';
 import { viewTransform } from './mat4.js';
 
@@ -63,6 +63,7 @@ export class Director {
     trail = null,
     oled = true,
     slice = null,
+    set = 'classic',
     blend = true,
     onChange = () => {}
   } = {}) {
@@ -86,10 +87,11 @@ export class Director {
     // instances slicing the same list get provably disjoint sets — otherwise
     // each would be picking every n-th entry of its own private shuffle and the
     // two could still land on the same system at the same time.
+    const systems = catalog(set);
     const pool = slice && slice.count > 1
-      ? ATTRACTORS.filter((_, i) => i % slice.count === slice.index)
-      : ATTRACTORS;
-    this.playlist = shuffle(pool.length ? pool : ATTRACTORS, rng);
+      ? systems.filter((_, i) => i % slice.count === slice.index)
+      : systems;
+    this.playlist = shuffle(pool.length ? pool : systems, rng);
     if (start) this.playlist = [start, ...this.playlist.filter(a => a !== start)];
     this.index = 0;
 

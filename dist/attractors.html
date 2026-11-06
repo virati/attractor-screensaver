@@ -240,7 +240,6 @@ __def("main.js", function (__exports, __req) {
 const { createContext } = __req('glutil.js');
 const { Scene } = __req('scene.js');
 const { Director } = __req('director.js');
-const { ATTRACTORS } = __req('attractors.js');
 const { Drift } = __req('drift.js');
 const { HistoryPanel } = __req('history-panel.js');
 const { equations, parameterLine, parameterValues, reference } = __req('format.js');
@@ -267,6 +266,9 @@ const OPTS = {
   speed: num('speed', 1),
   theme: params.get('theme') || 'any',
   attractor: params.get('attractor'),
+  // Which systems to cycle: `classic` (Reusser's), `lie` (Lie brackets of
+  // dysts pairs, built by tools/lie_pairs.py) or `all`.
+  set: params.get('set') || 'classic',
   // The notebook renders at the full devicePixelRatio; 1.75 clipped that on a
   // panel scaled past it, costing resolution to save fill rate the quality
   // ladder is already there to manage.
@@ -367,6 +369,7 @@ async function boot() {
     theme: OPTS.theme,
     rng: OPTS.seed === null ? Math.random : mulberry32(OPTS.seed),
     pinned: OPTS.attractor,
+    set: OPTS.set,
     drift,
     trail: Object.keys(TRAIL).length ? TRAIL : null,
     oled: OPTS.oled,
@@ -386,7 +389,7 @@ async function boot() {
     el('params').textContent = parameterLine(attractor);
     el('ref').textContent = reference(attractor);
     el('counter').textContent =
-      `${String(dir.index + 1).padStart(2, '0')} / ${ATTRACTORS.length}`;
+      `${String(dir.index + 1).padStart(2, '0')} / ${dir.playlist.length}`;
     el('palette').textContent = style.palette.name;
     if (history) history.show(attractor);
   }
@@ -854,6 +857,16 @@ function integrateFrag(attractor) {
   const names = Object.keys(params);
   const decls = names.length ? names.map(n => `uniform float ${n};`).join('\n') : '';
   const deriv = attractor.deriv.trim().split('\n').map(l => '    ' + l.trim()).join('\n');
+  // `respawn` (generated systems that have no bounded attractor) re-seeds a
+  // particle in the starting blob once it is this far from it, so what is on
+  // screen stays the field's behaviour near where it was seeded.
+  const glf = v => (Number.isInteger(v) ? v.toFixed(1) : String(v));
+  const respawn = attractor.respawn
+    ? `if (length(p - uOrigin) > ${glf(attractor.respawn)}) {
+      p = uOrigin + ${glf(attractor.initScale ?? 1)} * sphericalRandom(float(row) + 0.5 + t);
+      fresh = 0.0;
+    }`
+    : '';
   return `#version 300 es
 precision highp float;
 uniform sampler2D uSrc;
@@ -877,6 +890,9 @@ void main () {
   vec3 p = texelFetch(uSrc, ivec2(uColumn, row), 0).xyz;
   float t = uT;
   float dt = uDt;
+  // 0 marks a sample that was re-seeded rather than integrated, so the trail
+  // renderer does not draw a streak from where it was to where it restarted.
+  float fresh = 1.0;
 
   for (int i = 0; i < uSubsteps; i++) {
     vec3 k1 = D(p, t);
@@ -889,10 +905,11 @@ void main () {
     // Trajectories that escape get pulled back toward the origin along the
     // same ray; ones that go non-finite are re-seeded from scratch.
     float m = dot(p, p);
-    if (!(m < 1e12)) p = uOrigin + sphericalRandom(float(row) + 0.5 + t);
-    else if (m > 1e6) p *= 0.0001;
+    if (!(m < 1e12)) { p = uOrigin + sphericalRandom(float(row) + 0.5 + t); fresh = 0.0; }
+    else if (m > 1e6) { p *= 0.0001; fresh = 0.0; }
+    ${respawn}
   }
-  fragColor = vec4(p, 1.0);
+  fragColor = vec4(p, fresh);
 }`;
 }
 
@@ -1079,6 +1096,13 @@ vec4 clipOf (int particle, int slot) {
   return uProjView * world;
 }
 
+// The simulation writes w = 0 into a sample it had to re-seed rather than
+// integrate, so the segment arriving at it is a jump, not a piece of trail.
+bool reseeded (int particle, int slot) {
+  int column = (uRing.z + 1 + slot) % uRing.x;
+  return texelFetch(uState, ivec2(column, particle), 0).w < 0.5;
+}
+
 float widthAt (float param) {
   return uWidth * exp(-3.0 * uFade * (1.0 - param));
 }
@@ -1090,6 +1114,7 @@ void main () {
 
   // Slots older than what has actually been simulated are collapsed away.
   bool alive = slot >= steps - uRing.w;
+  if (uMode == 0 && reseeded(particle, slot + 1)) alive = false;
 
   float denom = float(steps - 1);
   float paramA = float(slot) / denom;
@@ -1686,7 +1711,7 @@ __def("director.js", function (__exports, __req) {
 // Runs the show: shuffles through the attractors, dresses each one in a
 // different palette and camera move, and cross-fades between them.
 
-const { ATTRACTORS, byName } = __req('attractors.js');
+const { catalog, byName } = __req('catalog.js');
 const { PALETTES, oledSafe } = __req('palettes.js');
 const { viewTransform } = __req('mat4.js');
 
@@ -1748,6 +1773,7 @@ class Director {
     trail = null,
     oled = true,
     slice = null,
+    set = 'classic',
     blend = true,
     onChange = () => {}
   } = {}) {
@@ -1771,10 +1797,11 @@ class Director {
     // instances slicing the same list get provably disjoint sets — otherwise
     // each would be picking every n-th entry of its own private shuffle and the
     // two could still land on the same system at the same time.
+    const systems = catalog(set);
     const pool = slice && slice.count > 1
-      ? ATTRACTORS.filter((_, i) => i % slice.count === slice.index)
-      : ATTRACTORS;
-    this.playlist = shuffle(pool.length ? pool : ATTRACTORS, rng);
+      ? systems.filter((_, i) => i % slice.count === slice.index)
+      : systems;
+    this.playlist = shuffle(pool.length ? pool : systems, rng);
     if (start) this.playlist = [start, ...this.playlist.filter(a => a !== start)];
     this.index = 0;
 
@@ -1930,6 +1957,29 @@ class Director {
 }
 
 Object.assign(__exports, { Director });
+
+});
+
+__def("catalog.js", function (__exports, __req) {
+// Every system the screensaver knows, in named sets. `classic` is Reusser's
+// collection; `lie` holds the Lie brackets of dysts pairs that
+// tools/lie_pairs.py has built; `all` is both.
+
+const { ATTRACTORS } = __req('attractors.js');
+const { LIE_ATTRACTORS } = __req('lie-attractors.js');
+
+const SETS = {
+  classic: ATTRACTORS,
+  lie: LIE_ATTRACTORS,
+  all: [...ATTRACTORS, ...LIE_ATTRACTORS]
+};
+
+// An unknown or empty set falls back to the classics rather than a blank screen.
+const catalog = set => (SETS[set] && SETS[set].length ? SETS[set] : ATTRACTORS);
+
+const byName = name => SETS.all.find(a => a.name === name);
+
+Object.assign(__exports, { SETS, catalog, byName });
 
 });
 
@@ -2493,6 +2543,121 @@ Object.assign(__exports, { ATTRACTORS, byName });
 
 });
 
+__def("lie-attractors.js", function (__exports, __req) {
+// Generated by tools/lie_pairs.py from tools/lie-pairs.json. Do not edit.
+// Each entry is the Lie bracket [f, g] = (df/dx) g - (dg/dx) f of two dysts
+// systems, computed with autoLie. Regenerate: python tools/lie_pairs.py render
+
+const LIE_ATTRACTORS = [
+  {
+    name: "[DequanLi, Blasius]",
+    f: "DequanLi",
+    g: "Blasius",
+    deriv: `
+    -0.0016*x * x*y*z/(0.0025*x * x + 0.1*x + 1.0) + 0.4*x * x*y/(0.0025*x * x + 0.1*x + 1.0) - 0.2*x * x*z/(0.05*x + 1.0) + 11.0*x * x/(0.05*x + 1.0) - 0.4*x*y * y/(0.0025*x * x + 0.1*x + 1.0) + 0.16*x*y*z + 12.0*x*y/(0.05*x + 1.0) - 1.6*x*z + 0.0096*x + 8.0*y * y/(0.05*x + 1.0) - 40.0*y*z - 80.0*y,
+    0.0016*x * x*y*z/(0.0025*x * x + 0.1*x + 1.0) - 0.65*x * x*y - 0.4*x * x*y/(0.0025*x * x + 0.1*x + 1.0) + 0.2*x * x*z/(0.05*x + 1.0) - 11.0*x * x/(0.05*x + 1.0) + x*y * y + 0.4*x*y * y/(0.0025*x * x + 0.1*x + 1.0) - x*y*z + 0.168*x*y*z/(0.05*x + 1.0) - 3.0*x*y/(0.05*x + 1.0) - x*z * z + 63.0*x*z + 109.94*x - 8.0*y * y/(0.05*x + 1.0) + 1.833*y*z,
+    0.65*x * x*y + 0.46*x * x*y/(0.05*x + 1.0) - 7.8*x * x - x*y * y - 0.2*x*y * y/(0.05*x + 1.0) - x*y*z + 10.0*x*y + x*z * z - 55.0*x*z - 20.0*y*z + 0.10998`,
+    params: {},
+    dt: 6.487e-06,
+    initScale: 1.945,
+    initOrigin: [7.812, 6.909, 0.09177],
+    view: {"center": [-0.004312, -0.04954, -206.5], "size": [78.77, 78.77, 78.77], "rotation": [1.5707963268, 0, 0]},
+    refs: [{"title": "Lie bracket of DequanLi and Blasius, by autoLie", "authors": ["dysts", "autoLie"]}],
+    history: {"origin": "[DequanLi, Blasius] · a Lie bracket of two dysts systems", "text": ["This is neither system. It is the Lie bracket of two of them, [f, g] = (∂f/∂x) g − (∂g/∂x) f, with f the DequanLi flow and g the Blasius flow, at their published parameters. The bracket measures how far the two flows fail to commute: follow f then g for a moment, then f and g backwards, and you miss where you started by an amount proportional to [f, g].", "f — DequanLi: Related to the Three Scroll unified attractor TSUCS-2 Li, Phys Lett A. 2008: 387-393.", "g — Blasius:  A chaotic food web composed of interacting predators,, consumers, and vegetation. Blasius, Huppert, Stone. Nature 1999", "Its own flow is chaotic: nearby particles separate at roughly e^0.06 per crossing of the attractor.", "The bracket was traced to closed form, printed as GLSL, and checked against autoLie's autograd bracket on the attractor (agreement to 4e-16). [g, f] is the same field reversed: the same curves, run backwards, so its attractors are this one's repellers."], "sources": ["https://github.com/williamgilpin/dysts", "https://github.com/virati/autoLie"]},
+    lie: {"lyapunov": 0.06152, "bounded": true, "autolieError": 3.54e-16},
+  },
+  {
+    name: "[Hadley, SprottA]",
+    f: "Hadley",
+    g: "SprottA",
+    deriv: `
+    x*y + 4.0*x*z + 0.8*y - 2.0*z - 1.0,
+    -x * x - x*y*z + 4.0*x*z * z - 3.2*x - 3.0*y*z - z * z - z + 1.8,
+    -4.0*x * x + x*y * y - 4.0*x*y*z + x + 3.0*y * y + y*z + 2.0*y - 1.0`,
+    params: {},
+    dt: 0.007445,
+    initScale: 1.0,
+    initOrigin: [0.0, 0.0, 0.0],
+    view: {"center": [0.004072, 0.1791, -0.1604], "size": [3.437, 3.437, 3.437], "rotation": [1.5707963268, 0, 0]},
+    refs: [{"title": "Lie bracket of Hadley and SprottA, by autoLie", "authors": ["dysts", "autoLie"]}],
+    history: {"origin": "[Hadley, SprottA] · a Lie bracket of two dysts systems", "text": ["This is neither system. It is the Lie bracket of two of them, [f, g] = (∂f/∂x) g − (∂g/∂x) f, with f the Hadley flow and g the SprottA flow, at their published parameters. The bracket measures how far the two flows fail to commute: follow f then g for a moment, then f and g backwards, and you miss where you started by an amount proportional to [f, g].", "f — Hadley: An atmospheric convective cell. G. Hadley (1735). On the cause of the general trade winds. Philosophical Transactions of the Royal Society, vol. 34, pp. 58--62.", "g — SprottA: A member of the Sprott family of algebraically-simple chaotic sytems. Sprott (1994). Some simple chaotic flows. Physical Review E (1994).", "Its own flow is chaotic: nearby particles separate at roughly e^0.26 per crossing of the attractor.", "The bracket was traced to closed form, printed as GLSL, and checked against autoLie's autograd bracket on the attractor (agreement to 3e-16). [g, f] is the same field reversed: the same curves, run backwards, so its attractors are this one's repellers."], "sources": ["https://github.com/williamgilpin/dysts", "https://github.com/virati/autoLie"]},
+    lie: {"lyapunov": 0.2606, "bounded": true, "autolieError": 3.14e-16},
+  },
+  {
+    name: "[Hadley, Tsucs2]",
+    f: "Hadley",
+    g: "Tsucs2",
+    deriv: `
+    -2.0*x * x*y + 0.8*x * x*z - 40.0*x*y + 160.5*x*z + 0.5*y * y*z - 80.0*y * y + 32.0*y + 0.5*z * z * z - 41.666*z * z - 0.9*z + 32.0,
+    2.6*x * x * x + 0.5*x*y*z - 40.0*x*y - 2.0*x*z * z + 236.468*x*z - y * y*z + 40.0*y * y - 160.0*y*z - z * z * z + 1.8*z - 20.0,
+    -0.65*x * x * x + 0.39*x * x - 1.3*x*y * y + 2.0*x*y*z - 83.132*x*y - 0.8*x*z * z - 40.0*x*z + 1.34*x + y * y * y + 160.0*y * y + y*z * z + 40.0*y*z - 1.8*y`,
+    params: {},
+    dt: 4.539e-07,
+    initScale: 17.65,
+    initOrigin: [0.5224, 0.1174, 38.73],
+    view: {"center": [-169.9, -163.6, -84.85], "size": [362.3, 362.3, 362.3], "rotation": [1.5707963268, 0, 0]},
+    refs: [{"title": "Lie bracket of Hadley and Tsucs2, by autoLie", "authors": ["dysts", "autoLie"]}],
+    history: {"origin": "[Hadley, Tsucs2] · a Lie bracket of two dysts systems", "text": ["This is neither system. It is the Lie bracket of two of them, [f, g] = (∂f/∂x) g − (∂g/∂x) f, with f the Hadley flow and g the Tsucs2 flow, at their published parameters. The bracket measures how far the two flows fail to commute: follow f then g for a moment, then f and g backwards, and you miss where you started by an amount proportional to [f, g].", "f — Hadley: An atmospheric convective cell. G. Hadley (1735). On the cause of the general trade winds. Philosophical Transactions of the Royal Society, vol. 34, pp. 58--62.", "g — Tsucs2: A named attractor related to the DequanLi attractor Pan, Zhou, Li (2013). Synchronization of Three-Scroll Unified Chaotic System (TSUCS) and its hyper-chaotic system using active pinning control", "Its own flow is chaotic: nearby particles separate at roughly e^0.05 per crossing of the attractor.", "The bracket was traced to closed form, printed as GLSL, and checked against autoLie's autograd bracket on the attractor (agreement to 2e-15). [g, f] is the same field reversed: the same curves, run backwards, so its attractors are this one's repellers."], "sources": ["https://github.com/williamgilpin/dysts", "https://github.com/virati/autoLie"]},
+    lie: {"lyapunov": 0.0538, "bounded": true, "autolieError": 2.26e-15},
+  },
+  {
+    name: "[Lorenz, Rossler]",
+    f: "Lorenz",
+    g: "Rossler",
+    deriv: `
+    x*y - x*z + 38.0*x + 11.0*y + 7.333*z,
+    -x * x*z + 5.9*x*z + 3.2*x + y*z - 38.0*y + z * z - 28.0*z,
+    -x * x*y + x * x + 5.9*x*y + 10.0*x*z - y * y - 11.0*y*z - 0.5334`,
+    params: {},
+    respawn: 29.47,
+    dt: 8.094e-05,
+    initScale: 7.367,
+    initOrigin: [-0.4471, -0.3125, 23.55],
+    view: {"center": [-0.4471, -0.3125, 23.55], "size": [29.47, 29.47, 29.47], "rotation": [1.5707963268, 0, 0]},
+    refs: [{"title": "Lie bracket of Lorenz and Rossler, by autoLie", "authors": ["dysts", "autoLie"]}],
+    history: {"origin": "[Lorenz, Rossler] · a Lie bracket of two dysts systems", "text": ["This is neither system. It is the Lie bracket of two of them, [f, g] = (∂f/∂x) g − (∂g/∂x) f, with f the Lorenz flow and g the Rossler flow, at their published parameters. The bracket measures how far the two flows fail to commute: follow f then g for a moment, then f and g backwards, and you miss where you started by an amount proportional to [f, g].", "f — Lorenz: A minimal weather model based on atmospheric convection. Lorenz, Edward N (1963). Deterministic nonperiodic flow. Journal of the atmospheric sciences 20.2 (1963): 130-141.", "g — Rossler: Spiral-type chaos in a simple oscillator model. Rossler, O. E. (1976), An Equation for Continuous Chaos, Physics Letters, 57A (5): 3972013398,", "Neither [f, g] nor [g, f] has a bounded attractor at these parameters: from every seed tried, particles either escape to infinity or stall at a fixed point. What you see is the field's flow near f's attractor, each particle re-seeded there once it runs away. When f and g both have constant divergence, as Lorenz and most of Sprott's systems do, the bracket is volume-preserving and cannot have an attractor at all.", "The bracket was traced to closed form, printed as GLSL, and checked against autoLie's autograd bracket on the attractor (agreement to 4e-16). [g, f] is the same field reversed: the same curves, run backwards, so its attractors are this one's repellers."], "sources": ["https://github.com/williamgilpin/dysts", "https://github.com/virati/autoLie"]},
+    lie: {"lyapunov": null, "bounded": false, "autolieError": 3.81e-16},
+  },
+  {
+    name: "[Rossler, SaltonSea]",
+    f: "Rossler",
+    g: "SaltonSea",
+    deriv: `
+    0.115*x * x - 0.147*x*y - 0.11*x*z - 0.115*y * y - 0.115*y*z + 5.5*y*z/(y + 15.0) + 25.4*y + 30.3*z,
+    -0.115*x * x - 15.5*x*y*z/(y * y + 30.0*y + 225.0) + 15.5*x*y*z/(y + 15.0) - 0.115*x*y + 15.5*x*z/(y + 15.0) + 25.4*x - 3.1*y * y*z/(y * y + 30.0*y + 225.0) + 0.06*y * y + 0.06*y*z - 88.35*y*z/(y + 15.0) + 3.1*y/(y + 15.0),
+    -0.055*x * x*z - 0.115*x*y*z + 10.0*x*y*z/(y * y + 30.0*y + 225.0) + 22.0*x*z - 10.0*x*z/(y + 15.0) + 2.0*y * y*z/(y * y + 30.0*y + 225.0) - 2.0*y*z/(y + 15.0) - 2.0*y/(y + 15.0) + 1.66`,
+    params: {},
+    dt: 6.412e-05,
+    initScale: 1.947,
+    initOrigin: [6.513, 0.4772, 0.3416],
+    view: {"center": [2.778, 232.9, 207.1], "size": [321.6, 321.6, 321.6], "rotation": [1.5707963268, 0, 0]},
+    refs: [{"title": "Lie bracket of Rossler and SaltonSea, by autoLie", "authors": ["dysts", "autoLie"]}],
+    history: {"origin": "[Rossler, SaltonSea] · a Lie bracket of two dysts systems", "text": ["This is neither system. It is the Lie bracket of two of them, [f, g] = (∂f/∂x) g − (∂g/∂x) f, with f the Rossler flow and g the SaltonSea flow, at their published parameters. The bracket measures how far the two flows fail to commute: follow f then g for a moment, then f and g backwards, and you miss where you started by an amount proportional to [f, g].", "f — Rossler: Spiral-type chaos in a simple oscillator model. Rossler, O. E. (1976), An Equation for Continuous Chaos, Physics Letters, 57A (5): 3972013398,", "g — SaltonSea: An eco-epidemiological model of bird and fish abundances in the Salton sea of southern California. Upadhyay, Bairagi, Kundu, Chattopadhyay (2007).Chaos in eco-epidemiological problem of the Salton Sea and its possible control. Applied mathematics and computation.", "Its own flow is chaotic: nearby particles separate at roughly e^0.09 per crossing of the attractor.", "The bracket was traced to closed form, printed as GLSL, and checked against autoLie's autograd bracket on the attractor (agreement to 5e-16). [g, f] is the same field reversed: the same curves, run backwards, so its attractors are this one's repellers."], "sources": ["https://github.com/williamgilpin/dysts", "https://github.com/virati/autoLie"]},
+    lie: {"lyapunov": 0.08897, "bounded": true, "autolieError": 4.76e-16},
+  },
+  {
+    name: "[Rossler, SprottA]",
+    f: "Rossler",
+    g: "SprottA",
+    deriv: `
+    y * y - y*z - 0.2*y - 1.0,
+    -x*y*z - x*z - 0.2*x + 5.7*y*z - 0.2*y - z,
+    -x*y * y + 2.0*x*y + x + 6.1*y * y + y*z - 5.7`,
+    params: {},
+    dt: 0.01296,
+    initScale: 1.947,
+    initOrigin: [6.513, 0.4772, 0.3416],
+    view: {"center": [2.685, -0.1149, -0.7008], "size": [4.415, 4.415, 4.415], "rotation": [1.5707963268, 0, 0]},
+    refs: [{"title": "Lie bracket of Rossler and SprottA, by autoLie", "authors": ["dysts", "autoLie"]}],
+    history: {"origin": "[Rossler, SprottA] · a Lie bracket of two dysts systems", "text": ["This is neither system. It is the Lie bracket of two of them, [f, g] = (∂f/∂x) g − (∂g/∂x) f, with f the Rossler flow and g the SprottA flow, at their published parameters. The bracket measures how far the two flows fail to commute: follow f then g for a moment, then f and g backwards, and you miss where you started by an amount proportional to [f, g].", "f — Rossler: Spiral-type chaos in a simple oscillator model. Rossler, O. E. (1976), An Equation for Continuous Chaos, Physics Letters, 57A (5): 3972013398,", "g — SprottA: A member of the Sprott family of algebraically-simple chaotic sytems. Sprott (1994). Some simple chaotic flows. Physical Review E (1994).", "Its own flow is chaotic: nearby particles separate at roughly e^0.26 per crossing of the attractor.", "The bracket was traced to closed form, printed as GLSL, and checked against autoLie's autograd bracket on the attractor (agreement to 8e-16). [g, f] is the same field reversed: the same curves, run backwards, so its attractors are this one's repellers."], "sources": ["https://github.com/williamgilpin/dysts", "https://github.com/virati/autoLie"]},
+    lie: {"lyapunov": 0.2597, "bounded": true, "autolieError": 7.61e-16},
+  },
+];
+
+Object.assign(__exports, { LIE_ATTRACTORS });
+
+});
+
 __def("palettes.js", function (__exports, __req) {
 // Colour schemes. `color1` → `color2` is the gradient across trajectories;
 // `border` is the ink that separates overlapping strands.
@@ -2686,7 +2851,8 @@ class HistoryPanel {
   }
 
   show(attractor) {
-    const entry = HISTORY[attractor.name];
+    // Generated systems (the Lie brackets) carry their own notes.
+    const entry = attractor.history || HISTORY[attractor.name];
     this.root.classList.toggle('empty', !entry);
     this.originEl.textContent = entry ? entry.origin : '';
 
