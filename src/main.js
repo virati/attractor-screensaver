@@ -14,18 +14,23 @@ const num = (key, fallback) => {
 };
 const flag = key => params.has(key) && params.get(key) !== '0' && params.get(key) !== 'false';
 
-// Named looks: a palette, a framing and a set of pinned trail settings.
-// `notebook` is Reusser's own rendering -- white paper, flat fat strokes in the
-// blue-to-mint ramp, no ink, no shading, no room, framed from inside the shape.
-// Anything given explicitly on the query string still wins.
+// Named looks: a palette, a framing, a particle count and a set of pinned trail
+// settings. Anything given explicitly on the query string still wins.
+//
+// `notebook` is Part 1 of Reusser's notebook, value for value: 20 particles
+// with 100-sample tracks on white, a constant 5 px stroke coloured by particle
+// index from mint to blue, and an edge that fades to white from half the
+// radius out, so a line in front is parted from whatever it crosses. No
+// taper, shading, tail fade, room or shadow.
 const LOOKS = {
   notebook: {
-    palette: 'Notebook',
+    palette: 'Reusser',
     oled: false,
-    zoom: 1.9,
+    particles: 20,
+    steps: 100,
     trail: {
-      width: 22, fade: 0.45, tailFade: 0, colorBy: 0,
-      shading: 0, borderOpacity: 0, gridOpacity: 0, shadow: false
+      width: 5, fade: 0, tailFade: 0, colorBy: 1,
+      shading: 0, borderOpacity: 1, borderWidth: 0.9, gridOpacity: 0, shadow: false
     }
   }
 };
@@ -38,11 +43,14 @@ const OPTS = {
   continuous: flag('continuous'),
   sweep: num('sweep', 0.12),
   sweepPeriod: Math.max(4, num('sweepPeriod', 55)),
-  particles: Math.max(64, Math.min(4096, num('particles', 1024))),
+  particles: Math.max(1, Math.min(4096, num('particles', LOOK.particles ?? 1024))),
+  // A count that was asked for (by a look or particles=) is held; otherwise the
+  // quality ladder scales it with the frame rate.
+  pinParticles: params.has('particles') || LOOK.particles !== undefined,
   // Two samples is one segment, which is the shortest a trail can be and still
   // have a direction; one sample would divide by zero working out where along
   // the trail a vertex sits.
-  steps: Math.max(2, Math.min(512, num('steps', 180))),
+  steps: Math.max(2, Math.min(512, num('steps', LOOK.steps ?? 180))),
   speed: num('speed', 1),
   theme: params.get('theme') || 'any',
   attractor: params.get('attractor'),
@@ -137,7 +145,9 @@ export async function boot() {
   // first time a frame ran long — and since a rung once lost is never climbed
   // back to, overruled for the rest of the session.
   const LADDER = [0.25, 0.5, 0.75, 1, 2].map(scale => ({
-    particles: Math.max(64, Math.min(4096, Math.round(OPTS.particles * scale))),
+    particles: OPTS.pinParticles
+      ? OPTS.particles
+      : Math.max(64, Math.min(4096, Math.round(OPTS.particles * scale))),
     steps: OPTS.steps
   }));
   let rung = 3;
