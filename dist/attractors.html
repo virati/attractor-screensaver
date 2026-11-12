@@ -280,14 +280,14 @@ const OPTS = {
   continuous: flag('continuous'),
   sweep: num('sweep', 0.12),
   sweepPeriod: Math.max(4, num('sweepPeriod', 55)),
-  particles: Math.max(1, Math.min(4096, num('particles', LOOK.particles ?? 1024))),
+  particles: Math.max(1, Math.min(4096, num('particles', LOOK.particles ?? 384))),
   // A count that was asked for (by a look or particles=) is held; otherwise the
   // quality ladder scales it with the frame rate.
   pinParticles: params.has('particles') || LOOK.particles !== undefined,
   // Two samples is one segment, which is the shortest a trail can be and still
   // have a direction; one sample would divide by zero working out where along
   // the trail a vertex sits.
-  steps: Math.max(2, Math.min(512, num('steps', LOOK.steps ?? 180))),
+  steps: Math.max(2, Math.min(512, num('steps', LOOK.steps ?? 50))),
   speed: num('speed', 1),
   theme: params.get('theme') || 'any',
   attractor: params.get('attractor'),
@@ -1215,8 +1215,10 @@ void main () {
   vCapsule = vec3(along, across, len);
   vRadius = vec2(rA, rB);
 
-  // Per-trail depth nudge, so trails that overlap exactly do not z-fight.
-  z -= 0.0001 * abs(pn - 0.5);
+  // Per-trail depth nudge, so trails that overlap exactly do not z-fight. It
+  // has to be distinct per trail: abs(pn - 0.5) gave trails i and n-1-i the
+  // same nudge, and those two then traded places from segment to segment.
+  z -= 0.0001 * pn;
 
   gl_Position = vec4(px / halfRes, z, 1.0);
 
@@ -2117,9 +2119,9 @@ class Director {
       shadowColor: palette.shadowColor,
       shadow: r() < 0.7,
       shading: lerp(0.05, 0.3, r()),
-      width: lerp(4, 11, r() ** 1.5),
+      width: lerp(4, 8, r() ** 1.5),
       fade: lerp(0.1, 0.6, r()),
-      tailFade: lerp(0.08, 0.42, r()),
+      tailFade: lerp(0, 0.25, r()),
       // 0 colours by the particle's seed radius, 1 by its index. The notebook
       // offers only these two ends; a value between them is ours.
       colorBy: r() < 0.7 ? 0 : 1,

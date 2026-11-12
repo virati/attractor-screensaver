@@ -43,14 +43,14 @@ const OPTS = {
   continuous: flag('continuous'),
   sweep: num('sweep', 0.12),
   sweepPeriod: Math.max(4, num('sweepPeriod', 55)),
-  particles: Math.max(1, Math.min(4096, num('particles', LOOK.particles ?? 1024))),
+  particles: Math.max(1, Math.min(4096, num('particles', LOOK.particles ?? 384))),
   // A count that was asked for (by a look or particles=) is held; otherwise the
   // quality ladder scales it with the frame rate.
   pinParticles: params.has('particles') || LOOK.particles !== undefined,
   // Two samples is one segment, which is the shortest a trail can be and still
   // have a direction; one sample would divide by zero working out where along
   // the trail a vertex sits.
-  steps: Math.max(2, Math.min(512, num('steps', LOOK.steps ?? 180))),
+  steps: Math.max(2, Math.min(512, num('steps', LOOK.steps ?? 50))),
   speed: num('speed', 1),
   theme: params.get('theme') || 'any',
   attractor: params.get('attractor'),

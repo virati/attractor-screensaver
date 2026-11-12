@@ -101,8 +101,10 @@ void main () {
   vCapsule = vec3(along, across, len);
   vRadius = vec2(rA, rB);
 
-  // Per-trail depth nudge, so trails that overlap exactly do not z-fight.
-  z -= 0.0001 * abs(pn - 0.5);
+  // Per-trail depth nudge, so trails that overlap exactly do not z-fight. It
+  // has to be distinct per trail: abs(pn - 0.5) gave trails i and n-1-i the
+  // same nudge, and those two then traded places from segment to segment.
+  z -= 0.0001 * pn;
 
   gl_Position = vec4(px / halfRes, z, 1.0);
 

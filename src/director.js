@@ -144,9 +144,9 @@ export class Director {
       shadowColor: palette.shadowColor,
       shadow: r() < 0.7,
       shading: lerp(0.05, 0.3, r()),
-      width: lerp(4, 11, r() ** 1.5),
+      width: lerp(4, 8, r() ** 1.5),
       fade: lerp(0.1, 0.6, r()),
-      tailFade: lerp(0.08, 0.42, r()),
+      tailFade: lerp(0, 0.25, r()),
       // 0 colours by the particle's seed radius, 1 by its index. The notebook
       // offers only these two ends; a value between them is ours.
       colorBy: r() < 0.7 ? 0 : 1,

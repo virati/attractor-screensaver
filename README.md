@@ -182,8 +182,8 @@ bin/attractors --idle duration=30 theme=dark particles=2048
 | `bloom` | `0.55` | glow strength on dark palettes; `0` for none |
 | `bloomThreshold` | `0.3` | brightness where the glow starts |
 | `post` | `1` | `0` draws straight to the canvas: browser MSAA, no bloom |
-| `particles` | `1024` | trajectories simulated in parallel |
-| `steps` | `180` | samples per trail, i.e. how long the comet tails are (2–512) |
+| `particles` | `384` | trajectories simulated in parallel |
+| `steps` | `50` | samples per trail, i.e. how long the comet tails are (2–512) |
 | `speed` | `1` | integration steps per display frame |
 | `dpr` | `2` | device-pixel-ratio ceiling |
 | `hud` | `1` | `0` hides the name and equations |
