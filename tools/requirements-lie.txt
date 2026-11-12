@@ -1,0 +1,7 @@
+# For tools/lie_pairs.py and `bin/attractors --bracket`. From the repo root:
+#   git submodule update --init
+#   uv venv .venv && uv pip install --python .venv/bin/python -r tools/requirements-lie.txt
+dysts
+sympy
+numpy>=2
+-e third_party/autoLie

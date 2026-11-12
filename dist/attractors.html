@@ -240,7 +240,6 @@ __def("main.js", function (__exports, __req) {
 const { createContext } = __req('glutil.js');
 const { Scene } = __req('scene.js');
 const { Director } = __req('director.js');
-const { ATTRACTORS } = __req('attractors.js');
 const { Drift } = __req('drift.js');
 const { HistoryPanel } = __req('history-panel.js');
 const { equations, parameterLine, parameterValues, reference } = __req('format.js');
@@ -252,6 +251,28 @@ const num = (key, fallback) => {
 };
 const flag = key => params.has(key) && params.get(key) !== '0' && params.get(key) !== 'false';
 
+// Named looks: a palette, a framing, a particle count and a set of pinned trail
+// settings. Anything given explicitly on the query string still wins.
+//
+// `notebook` is Part 1 of Reusser's notebook, value for value: 20 particles
+// with 100-sample tracks on white, a constant 5 px stroke coloured by particle
+// index from mint to blue, and an edge that fades to white from half the
+// radius out, so a line in front is parted from whatever it crosses. No
+// taper, shading, tail fade, room or shadow.
+const LOOKS = {
+  notebook: {
+    palette: 'Reusser',
+    oled: false,
+    particles: 20,
+    steps: 100,
+    trail: {
+      width: 5, fade: 0, tailFade: 0, colorBy: 1,
+      shading: 0, borderOpacity: 1, borderWidth: 0.9, gridOpacity: 0, shadow: false
+    }
+  }
+};
+const LOOK = LOOKS[params.get('look')] || {};
+
 const OPTS = {
   idle: flag('idle'),
   duration: num('duration', 300),
@@ -259,14 +280,20 @@ const OPTS = {
   continuous: flag('continuous'),
   sweep: num('sweep', 0.12),
   sweepPeriod: Math.max(4, num('sweepPeriod', 55)),
-  particles: Math.max(64, Math.min(4096, num('particles', 1024))),
+  particles: Math.max(1, Math.min(4096, num('particles', LOOK.particles ?? 384))),
+  // A count that was asked for (by a look or particles=) is held; otherwise the
+  // quality ladder scales it with the frame rate.
+  pinParticles: params.has('particles') || LOOK.particles !== undefined,
   // Two samples is one segment, which is the shortest a trail can be and still
   // have a direction; one sample would divide by zero working out where along
   // the trail a vertex sits.
-  steps: Math.max(2, Math.min(512, num('steps', 180))),
+  steps: Math.max(2, Math.min(512, num('steps', LOOK.steps ?? 50))),
   speed: num('speed', 1),
   theme: params.get('theme') || 'any',
   attractor: params.get('attractor'),
+  // Which systems to cycle: `classic` (Reusser's), `lie` (Lie brackets of
+  // dysts pairs, built by tools/lie_pairs.py) or `all`.
+  set: params.get('set') || 'classic',
   // The notebook renders at the full devicePixelRatio; 1.75 clipped that on a
   // panel scaled past it, costing resolution to save fill rate the quality
   // ladder is already there to manage.
@@ -275,7 +302,11 @@ const OPTS = {
   history: params.get('history') !== '0',
   // On by default: true-black grounds, and dark palettes only unless a light
   // one was asked for outright. `oled=0` restores the designed backgrounds.
-  oled: params.get('oled') !== '0',
+  oled: params.has('oled') ? params.get('oled') !== '0' : LOOK.oled ?? true,
+  // Pin one palette by name (see src/palettes.js), and frame tighter (>1) or
+  // looser (<1) than the director would.
+  palette: params.get('palette') || LOOK.palette || null,
+  zoom: Math.max(0.2, num('zoom', LOOK.zoom ?? 1)),
   // Multi-display: `label` names the window so the compositor can place it,
   // and `slice=i/n` gives each instance a disjoint share of the systems.
   label: params.get('label'),
@@ -287,6 +318,13 @@ const OPTS = {
   // opaquely. Blended, every disc shows through and the trails read as chains
   // of beads. `blend=1` if you want to see it.
   blend: flag('blend'),
+  // The scene is drawn offscreen at the GPU's highest multisample count (msaa=
+  // to cap it), then bloomed. post=0 draws straight to the canvas as before;
+  // bloom=0 keeps the antialiasing and drops the glow.
+  post: params.get('post') !== '0',
+  msaa: Math.max(0, num('msaa', 0)),
+  bloom: Math.max(0, num('bloom', 0.55)),
+  bloomThreshold: Math.max(0, num('bloomThreshold', 0.3)),
   seed: params.has('seed') ? num('seed', 1) : null,
   // Seconds to ignore input for after loading. With one window a moment is
   // plenty; with several, the later ones are still being mapped and placed
@@ -305,7 +343,7 @@ function sliceOf(spec) {
 // The look of the trail is rerolled per shot unless it is pinned here. Only the
 // keys actually given are overridden, so `width=2` still gets a random taper.
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-const TRAIL = {};
+const TRAIL = { ...(LOOK.trail || {}) };
 if (params.has('width')) TRAIL.width = clamp(num('width', 7), 0.5, 40);
 if (params.has('taper')) TRAIL.fade = clamp(num('taper', 0.35), 0, 2);
 if (params.has('tailFade')) TRAIL.tailFade = clamp(num('tailFade', 0.25), 0, 1);
@@ -331,7 +369,9 @@ async function boot() {
   if (OPTS.label) document.title = `Attractors ${OPTS.label}`;
 
   const canvas = el('gl');
-  const gl = createContext(canvas, { antialias: true });
+  // With post-processing the canvas is only ever a fullscreen copy target, so
+  // its own multisample buffer would be memory spent on nothing.
+  const gl = createContext(canvas, { antialias: !OPTS.post });
 
   // Quality ladder, walked only between shots so changes are never visible.
   //
@@ -342,14 +382,19 @@ async function boot() {
   // first time a frame ran long — and since a rung once lost is never climbed
   // back to, overruled for the rest of the session.
   const LADDER = [0.25, 0.5, 0.75, 1, 2].map(scale => ({
-    particles: Math.max(64, Math.min(4096, Math.round(OPTS.particles * scale))),
+    particles: OPTS.pinParticles
+      ? OPTS.particles
+      : Math.max(64, Math.min(4096, Math.round(OPTS.particles * scale))),
     steps: OPTS.steps
   }));
   let rung = 3;
   let pendingRung = 3;
   let ceilingRung = LADDER.length - 1;
 
-  const scene = new Scene(gl, LADDER[rung]);
+  const scene = new Scene(gl, {
+    ...LADDER[rung],
+    post: OPTS.post ? { samples: OPTS.msaa, bloom: OPTS.bloom, threshold: OPTS.bloomThreshold } : null
+  });
 
   // --continuous: walk the parameters instead of holding them fixed.
   const drift = OPTS.continuous
@@ -367,9 +412,12 @@ async function boot() {
     theme: OPTS.theme,
     rng: OPTS.seed === null ? Math.random : mulberry32(OPTS.seed),
     pinned: OPTS.attractor,
+    set: OPTS.set,
     drift,
     trail: Object.keys(TRAIL).length ? TRAIL : null,
     oled: OPTS.oled,
+    palette: OPTS.palette,
+    zoom: OPTS.zoom,
     blend: OPTS.blend,
     slice: sliceOf(OPTS.slice),
     quality: () => { rung = pendingRung; return LADDER[rung]; },
@@ -386,7 +434,7 @@ async function boot() {
     el('params').textContent = parameterLine(attractor);
     el('ref').textContent = reference(attractor);
     el('counter').textContent =
-      `${String(dir.index + 1).padStart(2, '0')} / ${ATTRACTORS.length}`;
+      `${String(dir.index + 1).padStart(2, '0')} / ${dir.playlist.length}`;
     el('palette').textContent = style.palette.name;
     if (history) history.show(attractor);
   }
@@ -709,6 +757,7 @@ const { Simulation } = __req('simulation.js');
 const { TrailRenderer } = __req('lines.js');
 const { Stage } = __req('stage.js');
 const { Camera } = __req('camera.js');
+const { PostFX } = __req('post.js');
 
 const VEIL_FRAG = `#version 300 es
 precision highp float;
@@ -726,6 +775,9 @@ class Scene {
     this.quad = fullscreenTriangle(gl);
     this.veil = program(gl, FULLSCREEN_VERT, VEIL_FRAG);
     this.style = null;
+    // Offscreen multisampling and bloom; `post: null` draws straight to the
+    // canvas as before.
+    this.post = opts.post === null ? null : new PostFX(gl, opts.post || {});
   }
 
   render({ veil = 0 } = {}) {
@@ -733,8 +785,11 @@ class Scene {
     const style = this.style;
     if (!style) return;
 
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+    if (this.post) this.post.begin();
+    else {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+    }
     gl.clearColor(style.background[0], style.background[1], style.background[2], 1);
     gl.clearDepth(1);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
@@ -763,13 +818,13 @@ class Scene {
     if (style.shadow && this.camera.eye[1] > style.floorY) {
       gl.disable(gl.DEPTH_TEST);
       gl.depthMask(false);
-      this.trails.draw(this.sim, this.camera, style, { shadow: true });
+      this.trails.draw(this.sim, this.camera, style, { shadow: true, dither: !this.post });
       gl.depthMask(true);
     }
 
     gl.enable(gl.DEPTH_TEST);
     gl.depthFunc(gl.LEQUAL);
-    this.trails.draw(this.sim, this.camera, style, { shadow: false });
+    this.trails.draw(this.sim, this.camera, style, { shadow: false, dither: !this.post });
 
     if (style.blend) gl.disable(gl.BLEND);
     else gl.disable(gl.SAMPLE_ALPHA_TO_COVERAGE);
@@ -787,9 +842,12 @@ class Scene {
       gl.bindVertexArray(null);
       gl.disable(gl.BLEND);
     }
+
+    if (this.post) this.post.end({ glow: style.palette.dark });
   }
 
   destroy() {
+    if (this.post) this.post.destroy();
     this.sim.destroy();
     this.trails.destroy();
     this.stage.destroy();
@@ -854,6 +912,16 @@ function integrateFrag(attractor) {
   const names = Object.keys(params);
   const decls = names.length ? names.map(n => `uniform float ${n};`).join('\n') : '';
   const deriv = attractor.deriv.trim().split('\n').map(l => '    ' + l.trim()).join('\n');
+  // `respawn` (generated systems that have no bounded attractor) re-seeds a
+  // particle in the starting blob once it is this far from it, so what is on
+  // screen stays the field's behaviour near where it was seeded.
+  const glf = v => (Number.isInteger(v) ? v.toFixed(1) : String(v));
+  const respawn = attractor.respawn
+    ? `if (length(p - uOrigin) > ${glf(attractor.respawn)}) {
+      p = uOrigin + ${glf(attractor.initScale ?? 1)} * sphericalRandom(float(row) + 0.5 + t);
+      fresh = 0.0;
+    }`
+    : '';
   return `#version 300 es
 precision highp float;
 uniform sampler2D uSrc;
@@ -877,6 +945,9 @@ void main () {
   vec3 p = texelFetch(uSrc, ivec2(uColumn, row), 0).xyz;
   float t = uT;
   float dt = uDt;
+  // 0 marks a sample that was re-seeded rather than integrated, so the trail
+  // renderer does not draw a streak from where it was to where it restarted.
+  float fresh = 1.0;
 
   for (int i = 0; i < uSubsteps; i++) {
     vec3 k1 = D(p, t);
@@ -889,10 +960,11 @@ void main () {
     // Trajectories that escape get pulled back toward the origin along the
     // same ray; ones that go non-finite are re-seeded from scratch.
     float m = dot(p, p);
-    if (!(m < 1e12)) p = uOrigin + sphericalRandom(float(row) + 0.5 + t);
-    else if (m > 1e6) p *= 0.0001;
+    if (!(m < 1e12)) { p = uOrigin + sphericalRandom(float(row) + 0.5 + t); fresh = 0.0; }
+    else if (m > 1e6) { p *= 0.0001; fresh = 0.0; }
+    ${respawn}
   }
-  fragColor = vec4(p, 1.0);
+  fragColor = vec4(p, fresh);
 }`;
 }
 
@@ -1040,12 +1112,12 @@ Object.assign(__exports, { Simulation });
 });
 
 __def("lines.js", function (__exports, __req) {
-// Trail renderer. Every visible segment and every joint is an instanced quad
-// whose corners are placed in screen space by the vertex shader, so line width
-// is in pixels and independent of depth. Round joints come from an SDF the
-// fragment shader turns into alpha, resolved by alpha-to-coverage against the
-// multisampled default framebuffer -- that keeps the pass opaque, so trails can
-// depth-test against each other without any sorting.
+// Trail renderer. Every visible segment is an instanced capsule whose corners
+// are placed in screen space by the vertex shader, so line width is in pixels
+// and independent of depth. The round ends come from an SDF the fragment shader
+// turns into alpha, resolved by alpha-to-coverage against a multisampled target
+// -- that keeps the pass opaque, so trails depth-test against each other
+// without any sorting.
 
 const { program } = __req('glutil.js');
 
@@ -1058,13 +1130,13 @@ layout(location = 0) in vec2 corner;   // (0..1, 0..1)
 uniform mat4 uProjView, uTransform;
 uniform sampler2D uState;
 uniform ivec4 uRing;      // steps, particles, head, filled
-uniform int uSegsPerTrail, uMode, uShadow, uBlend;
+uniform int uSegsPerTrail, uShadow, uBlend;
 uniform vec2 uResolution; // device pixels
 uniform float uWidth, uFade, uTailFade, uColorMode, uFloorY;
 uniform vec3 uColor1, uColor2, uBackground, uShadowColor;
 
-out vec2 vLineCoord;
-out float vWidth, vShade, vBorderMix;
+out vec3 vCapsule;   // (pixels along from A, pixels across, segment length)
+out vec2 vRadius;    // radius at A and at B, pixels
 out vec4 vColor;
 
 vec3 quasirandom (float n) {
@@ -1079,6 +1151,13 @@ vec4 clipOf (int particle, int slot) {
   return uProjView * world;
 }
 
+// The simulation writes w = 0 into a sample it had to re-seed rather than
+// integrate, so the segment arriving at it is a jump, not a piece of trail.
+bool reseeded (int particle, int slot) {
+  int column = (uRing.z + 1 + slot) % uRing.x;
+  return texelFetch(uState, ivec2(column, particle), 0).w < 0.5;
+}
+
 float widthAt (float param) {
   return uWidth * exp(-3.0 * uFade * (1.0 - param));
 }
@@ -1090,6 +1169,7 @@ void main () {
 
   // Slots older than what has actually been simulated are collapsed away.
   bool alive = slot >= steps - uRing.w;
+  if (reseeded(particle, slot + 1)) alive = false;
 
   float denom = float(steps - 1);
   float paramA = float(slot) / denom;
@@ -1097,13 +1177,12 @@ void main () {
   float pn = (float(particle) + 0.5) / float(uRing.y);
 
   vec4 clipA = clipOf(particle, slot);
-  vec4 clipB = uMode == 0 ? clipOf(particle, slot + 1) : clipA;
+  vec4 clipB = clipOf(particle, slot + 1);
 
   if (!alive || clipA.w <= 0.0 || clipB.w <= 0.0) {
     gl_Position = vec4(0.0, 0.0, 2.0, 1.0);  // behind the far plane: clipped
-    vLineCoord = vec2(0.0);
-    vWidth = 1.0;
-    vShade = 0.0;
+    vCapsule = vec3(0.0);
+    vRadius = vec2(1.0);
     vColor = vec4(0.0);
     return;
   }
@@ -1114,54 +1193,32 @@ void main () {
   float zA = clipA.z / clipA.w;
   float zB = clipB.z / clipB.w;
 
-  float along, across, param, z;
-  vec2 px;
+  // Each segment is a capsule: the quad runs a radius past both ends and the
+  // fragment shader rounds them off. Consecutive capsules overlap at the
+  // joint at the same depth, so a bend gets a round join with no second pass.
+  // (Joints used to be separate discs pushed just behind the segments, and
+  // wherever another trail sat at nearly the same depth it won inside the
+  // wedge, which with wide strokes read as teeth down every trail.)
+  float rA = 0.5 * widthAt(paramA);
+  float rB = 0.5 * widthAt(paramB);
+  float r = max(rA, rB);
+  vec2 d = pxB - pxA;
+  float len = length(d);
+  vec2 dir = len > 1e-5 ? d / len : vec2(1.0, 0.0);
+  vec2 nrm = vec2(-dir.y, dir.x);
+  float along = mix(-r, len + r, corner.x);
+  float across = (corner.y * 2.0 - 1.0) * r;
+  vec2 px = pxA + dir * along + nrm * across;
+  float t = len > 1e-5 ? clamp(along / len, 0.0, 1.0) : 0.0;
+  float z = mix(zA, zB, t);
+  float param = mix(paramA, paramB, t);
+  vCapsule = vec3(along, across, len);
+  vRadius = vec2(rA, rB);
 
-  if (uMode == 0) {
-    along = corner.x;
-    across = corner.y * 2.0 - 1.0;
-    param = mix(paramA, paramB, along);
-    vWidth = widthAt(param);
-    vec2 d = pxB - pxA;
-    float len = length(d);
-    vec2 dir = len > 1e-5 ? d / len : vec2(1.0, 0.0);
-    px = mix(pxA, pxB, along) + vec2(-dir.y, dir.x) * across * (0.5 * vWidth);
-    z = mix(zA, zB, along);
-    vLineCoord = vec2(0.0, across);
-    vShade = across;
-    vBorderMix = 1.0;
-  } else {
-    vec2 c = corner * 2.0 - 1.0;
-    param = paramA;
-    vWidth = widthAt(param);
-    px = pxA + c * (0.5 * vWidth);
-    // Nudged away from the eye so the segments drawn afterwards win wherever
-    // they overlap, leaving only the part of the disc that is a real joint.
-    z = zA + 1e-5;
-    vLineCoord = c;
-
-    // Shade the disc across the stroke, not radially, so a joint does not
-    // read as a bead threaded onto the line.
-    int neighbour = slot < steps - 1 ? slot + 1 : slot - 1;
-    vec4 clipN = clipOf(particle, neighbour);
-    vec2 tangent = vec2(1.0, 0.0);
-    if (clipN.w > 0.0) {
-      vec2 delta = (clipN.xy / clipN.w) * halfRes - pxA;
-      if (length(delta) > 1e-5) tangent = normalize(delta);
-    }
-    vShade = dot(c, vec2(-tangent.y, tangent.x));
-
-    // The border ink is drawn at the edge of whatever primitive is being
-    // rasterised, and a joint is a whole disc, so it was getting a complete
-    // dark ring -- one per trail sample, which reads as a black seam chopping
-    // the trail into segments. The ink is wanted where the disc forms the side
-    // of the stroke and not where it butts up against the segments either side,
-    // so it fades out along the direction of travel.
-    vBorderMix = clamp(1.0 - abs(dot(c, tangent)) * 1.7, 0.0, 1.0);
-  }
-
-  // Per-trail depth nudge, so trails that overlap exactly do not z-fight.
-  z -= 0.0001 * abs(pn - 0.5);
+  // Per-trail depth nudge, so trails that overlap exactly do not z-fight. It
+  // has to be distinct per trail: abs(pn - 0.5) gave trails i and n-1-i the
+  // same nudge, and those two then traded places from segment to segment.
+  z -= 0.0001 * pn;
 
   gl_Position = vec4(px / halfRes, z, 1.0);
 
@@ -1186,12 +1243,12 @@ const FRAG = `#version 300 es
 precision highp float;
 precision highp int;
 
-in vec2 vLineCoord;
-in float vWidth, vShade, vBorderMix;
+in vec3 vCapsule;
+in vec2 vRadius;
 in vec4 vColor;
 
 uniform int uShadow, uBlend;
-uniform float uShading;
+uniform float uShading, uDither;
 uniform vec2 uBorderWidth;
 uniform vec4 uBorderColor;
 
@@ -1208,11 +1265,15 @@ float dither (vec2 p) {
 }
 
 void main () {
-  float sdf = length(vLineCoord);
+  float along = vCapsule.x, across = vCapsule.y, len = vCapsule.z;
+  float r = mix(vRadius.x, vRadius.y, len > 1e-5 ? clamp(along / len, 0.0, 1.0) : 0.0);
+  float beyond = max(-along, along - len);       // > 0 inside the round ends
+  float sdf = length(vec2(max(beyond, 0.0), across)) / r;
 
-  float edge = linearstep(1.0, 1.0 - 2.0 / vWidth, sdf) * vColor.a;
+  // A pixel-wide feather, resolved by alpha-to-coverage.
+  float edge = linearstep(1.0, 1.0 - 1.0 / r, sdf) * vColor.a;
   // Nothing invisible should reach the depth buffer and block what is behind it.
-  if (uBlend == 1 && edge < 0.004) discard;
+  if (edge < 0.004) discard;
 
   if (uShadow == 1) {
     fragColor = vec4(vColor.rgb, edge);
@@ -1220,15 +1281,19 @@ void main () {
   }
 
   // A cheap cylindrical highlight across the width of the stroke.
-  float highlight = 1.0 - vShade * vShade;
+  float shade01 = across / r;
+  float highlight = 1.0 - shade01 * shade01;
   float shade = mix(1.0, highlight, uShading);
   shade = mix(shade, 1.0, uShading * highlight * 0.7);
 
-  vec2 threshold = 1.0 - uBorderWidth / vWidth;
+  vec2 threshold = 1.0 - uBorderWidth / (2.0 * r);
   float isBorder = linearstep(threshold.x, threshold.y, sdf);
+  // Ink the sides only. A cap mostly lies over the neighbouring segment, and
+  // inked it would draw a ring across the stroke at every sample.
+  float sides = 1.0 - linearstep(0.0, 0.5 * r, beyond);
 
-  vec3 rgb = mix(vColor.rgb * shade, uBorderColor.rgb, isBorder * uBorderColor.a * vBorderMix);
-  fragColor = vec4(rgb + dither(gl_FragCoord.xy) / 255.0, edge);
+  vec3 rgb = mix(vColor.rgb * shade, uBorderColor.rgb, isBorder * uBorderColor.a * sides);
+  fragColor = vec4(rgb + uDither * dither(gl_FragCoord.xy) / 255.0, edge);
 }`;
 
 class TrailRenderer {
@@ -1246,7 +1311,9 @@ class TrailRenderer {
     gl.bindVertexArray(null);
   }
 
-  draw(sim, camera, style, { shadow = false } = {}) {
+  // `dither`: off when drawing into the post-processing target, which dithers
+  // once, at the point it actually quantises to 8 bits.
+  draw(sim, camera, style, { shadow = false, dither = true } = {}) {
     const gl = this.gl;
     const { u, program: p } = this.prog;
     const dpr = style.pixelRatio;
@@ -1274,19 +1341,13 @@ class TrailRenderer {
     gl.uniform3fv(u.uShadowColor, style.shadowColor);
     gl.uniform1i(u.uShadow, shadow ? 1 : 0);
     gl.uniform1f(u.uShading, style.shading);
+    gl.uniform1f(u.uDither, dither ? 1 : 0);
     gl.uniform2f(u.uBorderWidth,
       2.0 * style.borderWidth * dpr + 0.75,
       2.0 * style.borderWidth * dpr - 0.75);
     gl.uniform4f(u.uBorderColor, ...style.borderColor, style.borderOpacity);
 
-    // Joints first, segments over them: what remains of a disc is exactly the
-    // wedge a corner needs, plus the round caps at either end of a trail.
-    gl.uniform1i(u.uSegsPerTrail, sim.steps);
-    gl.uniform1i(u.uMode, 1);
-    gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, sim.particles * sim.steps);
-
     gl.uniform1i(u.uSegsPerTrail, sim.steps - 1);
-    gl.uniform1i(u.uMode, 0);
     gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, sim.particles * (sim.steps - 1));
 
     gl.bindVertexArray(null);
@@ -1664,7 +1725,9 @@ class Camera {
     const vertical = this.fov / 2;
     const horizontal = Math.atan(Math.tan(vertical) * this.aspect);
     const half = Math.min(vertical, horizontal);
-    this.distance = Math.max(1.4, Math.min(9, (radius / Math.sin(half)) * margin));
+    // The floor of 0.6 keeps the eye outside the near plane of most shapes even
+    // when a zoomed-in look frames from inside the attractor.
+    this.distance = Math.max(0.6, Math.min(9, (radius / Math.sin(half)) * margin));
   }
 
   orbitBy(dx, dy) {
@@ -1682,11 +1745,238 @@ Object.assign(__exports, { Camera });
 
 });
 
+__def("post.js", function (__exports, __req) {
+// Post-processing: the scene is drawn into an offscreen multisample target,
+// resolved, given a bloom, and composited onto the canvas.
+//
+// The multisample target is the antialiasing. Trails resolve their soft edge
+// with alpha-to-coverage, and coverage has only as many levels as the buffer
+// has samples. The canvas's own buffer gets whatever the browser picks, usually
+// four; an offscreen renderbuffer can ask for the GPU's maximum, typically 8 or
+// 16, which is two to four times the edge resolution with the pass still
+// opaque and still depth-sorted for free. It is also half-float, so the dark
+// end of a tail fade is not already quantised to 8 bits before the bloom and
+// the final dither see it.
+//
+// The bloom is the usual mip chain (Jimenez, "Next Generation Post Processing
+// in Call of Duty: Advanced Warfare", 2014): a soft-thresholded prefilter at
+// half resolution, a 13-tap downsample to each smaller level, then a tent
+// upsample added back up the chain. It is skipped on light palettes, where a
+// glow only greys out the paper.
+
+const { program, fullscreenTriangle, FULLSCREEN_VERT } = __req('glutil.js');
+
+const HEADER = `#version 300 es
+precision highp float;
+in vec2 uv;
+out vec4 fragColor;
+uniform sampler2D uSrc;
+uniform vec2 uTexel;   // 1 / source size
+`;
+
+// Luminance above uThreshold passes, with a quadratic knee below it so the
+// cut-off is not a visible edge on a gradient.
+const PREFILTER = HEADER + `
+uniform float uThreshold, uKnee;
+void main () {
+  vec3 c = texture(uSrc, uv).rgb;
+  float l = max(c.r, max(c.g, c.b));
+  float soft = clamp(l - uThreshold + uKnee, 0.0, 2.0 * uKnee);
+  soft = soft * soft / (4.0 * uKnee + 1e-4);
+  float w = max(soft, l - uThreshold) / max(l, 1e-4);
+  fragColor = vec4(c * w, 1.0);
+}`;
+
+const DOWN = HEADER + `
+vec3 at (vec2 o) { return texture(uSrc, uv + o * uTexel).rgb; }
+void main () {
+  vec3 a = at(vec2(-2, 2)), b = at(vec2(0, 2)), c = at(vec2(2, 2));
+  vec3 d = at(vec2(-2, 0)), e = at(vec2(0, 0)), f = at(vec2(2, 0));
+  vec3 g = at(vec2(-2, -2)), h = at(vec2(0, -2)), i = at(vec2(2, -2));
+  vec3 j = at(vec2(-1, 1)), k = at(vec2(1, 1)), l = at(vec2(-1, -1)), m = at(vec2(1, -1));
+  vec3 s = e * 0.125 + (a + c + g + i) * 0.03125 + (b + d + f + h) * 0.0625 + (j + k + l + m) * 0.125;
+  fragColor = vec4(s, 1.0);
+}`;
+
+const UP = HEADER + `
+uniform float uRadius;
+vec3 at (vec2 o) { return texture(uSrc, uv + o * uTexel * uRadius).rgb; }
+void main () {
+  vec3 s = at(vec2(0, 0)) * 4.0
+    + (at(vec2(-1, 0)) + at(vec2(1, 0)) + at(vec2(0, -1)) + at(vec2(0, 1))) * 2.0
+    + at(vec2(-1, -1)) + at(vec2(1, -1)) + at(vec2(-1, 1)) + at(vec2(1, 1));
+  fragColor = vec4(s / 16.0, 1.0);
+}`;
+
+const COMPOSITE = HEADER + `
+uniform sampler2D uBloom;
+uniform float uStrength;
+// Interleaved gradient noise, under half a step of 8-bit colour: this is the
+// pass that finally quantises to the canvas, so it is the one that dithers.
+float dither (vec2 p) {
+  return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715)))) - 0.5;
+}
+void main () {
+  vec3 c = texture(uSrc, uv).rgb + uStrength * texture(uBloom, uv).rgb;
+  fragColor = vec4(c + dither(gl_FragCoord.xy) / 255.0, 1.0);
+}`;
+
+function texture(gl, w, h) {
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA16F, w, h);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  const fbo = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  return { tex, fbo, w, h, destroy() { gl.deleteTexture(tex); gl.deleteFramebuffer(fbo); } };
+}
+
+class PostFX {
+  // `samples`: multisample count, clamped to what the GPU allows (0 = its max).
+  // `bloom`: strength, 0 for none. `threshold`: brightness where glow starts.
+  constructor(gl, { samples = 0, bloom = 0.55, threshold = 0.3, radius = 1, levels = 6 } = {}) {
+    this.gl = gl;
+    const max = gl.getParameter(gl.MAX_SAMPLES);
+    this.samples = Math.max(1, Math.min(max, samples > 0 ? samples : max));
+    this.bloom = bloom;
+    this.threshold = threshold;
+    this.radius = radius;
+    this.levels = levels;
+    this.quad = fullscreenTriangle(gl);
+    this.prefilter = program(gl, FULLSCREEN_VERT, PREFILTER);
+    this.down = program(gl, FULLSCREEN_VERT, DOWN);
+    this.up = program(gl, FULLSCREEN_VERT, UP);
+    this.composite = program(gl, FULLSCREEN_VERT, COMPOSITE);
+    this.width = 0;
+    this.height = 0;
+    this.targets = null;
+  }
+
+  allocate(w, h) {
+    const gl = this.gl;
+    this.release();
+    const color = gl.createRenderbuffer();
+    gl.bindRenderbuffer(gl.RENDERBUFFER, color);
+    gl.renderbufferStorageMultisample(gl.RENDERBUFFER, this.samples, gl.RGBA16F, w, h);
+    const depth = gl.createRenderbuffer();
+    gl.bindRenderbuffer(gl.RENDERBUFFER, depth);
+    gl.renderbufferStorageMultisample(gl.RENDERBUFFER, this.samples, gl.DEPTH_COMPONENT24, w, h);
+    const msaa = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, msaa);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, color);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depth);
+    const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+    if (status !== gl.FRAMEBUFFER_COMPLETE) throw new Error(`Incomplete MSAA framebuffer: 0x${status.toString(16)}`);
+
+    const resolved = texture(gl, w, h);
+    const chain = [];
+    let cw = w, ch = h;
+    for (let i = 0; i < this.levels; i++) {
+      cw = Math.max(1, cw >> 1);
+      ch = Math.max(1, ch >> 1);
+      chain.push(texture(gl, cw, ch));
+      if (cw === 1 && ch === 1) break;
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    this.targets = { color, depth, msaa, resolved, chain };
+    this.width = w;
+    this.height = h;
+  }
+
+  release() {
+    const t = this.targets;
+    if (!t) return;
+    const gl = this.gl;
+    gl.deleteRenderbuffer(t.color);
+    gl.deleteRenderbuffer(t.depth);
+    gl.deleteFramebuffer(t.msaa);
+    t.resolved.destroy();
+    for (const c of t.chain) c.destroy();
+    this.targets = null;
+  }
+
+  // Bind the multisample target; the scene draws into it as if it were the canvas.
+  begin() {
+    const gl = this.gl;
+    const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
+    if (w !== this.width || h !== this.height || !this.targets) this.allocate(w, h);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.targets.msaa);
+    gl.viewport(0, 0, w, h);
+  }
+
+  pass(prog, src, dst, uniforms = {}) {
+    const gl = this.gl;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, dst ? dst.fbo : null);
+    gl.viewport(0, 0, dst ? dst.w : this.width, dst ? dst.h : this.height);
+    gl.useProgram(prog.program);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, src.tex);
+    gl.uniform1i(prog.u.uSrc, 0);
+    gl.uniform2f(prog.u.uTexel, 1 / src.w, 1 / src.h);
+    for (const [k, v] of Object.entries(uniforms)) if (prog.u[k]) gl.uniform1f(prog.u[k], v);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+
+  // Resolve, bloom, and composite onto the canvas.
+  end({ glow = true } = {}) {
+    const gl = this.gl;
+    const { msaa, resolved, chain } = this.targets;
+    const w = this.width, h = this.height;
+
+    gl.disable(gl.DEPTH_TEST);
+    gl.disable(gl.BLEND);
+    gl.disable(gl.SAMPLE_ALPHA_TO_COVERAGE);
+
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, msaa);
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, resolved.fbo);
+    gl.blitFramebuffer(0, 0, w, h, 0, 0, w, h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+
+    gl.bindVertexArray(this.quad.vao);
+    const strength = glow ? this.bloom : 0;
+    if (strength > 0) {
+      this.pass(this.prefilter, resolved, chain[0],
+        { uThreshold: this.threshold, uKnee: Math.max(0.05, this.threshold * 0.5) });
+      for (let i = 1; i < chain.length; i++) this.pass(this.down, chain[i - 1], chain[i]);
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.ONE, gl.ONE);
+      for (let i = chain.length - 1; i > 0; i--) {
+        this.pass(this.up, chain[i], chain[i - 1], { uRadius: this.radius });
+      }
+      gl.disable(gl.BLEND);
+    }
+
+    gl.useProgram(this.composite.program);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, chain[0].tex);
+    gl.uniform1i(this.composite.u.uBloom, 1);
+    // Each level was added in at full weight on the way up; divide that back out.
+    this.pass(this.composite, resolved, null, { uStrength: strength / chain.length });
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindVertexArray(null);
+  }
+
+  destroy() {
+    this.release();
+    this.quad.destroy();
+    for (const p of [this.prefilter, this.down, this.up, this.composite]) p.destroy();
+  }
+}
+
+Object.assign(__exports, { PostFX });
+
+});
+
 __def("director.js", function (__exports, __req) {
 // Runs the show: shuffles through the attractors, dresses each one in a
 // different palette and camera move, and cross-fades between them.
 
-const { ATTRACTORS, byName } = __req('attractors.js');
+const { catalog, byName } = __req('catalog.js');
 const { PALETTES, oledSafe } = __req('palettes.js');
 const { viewTransform } = __req('mat4.js');
 
@@ -1748,6 +2038,9 @@ class Director {
     trail = null,
     oled = true,
     slice = null,
+    set = 'classic',
+    palette = null,
+    zoom = 1,
     blend = true,
     onChange = () => {}
   } = {}) {
@@ -1761,6 +2054,8 @@ class Director {
     this.trail = trail;
     this.oled = oled;
     this.blend = blend;
+    this.palette = palette;
+    this.zoom = zoom;
     this.onChange = onChange;
     this.paused = false;
     this.margin = 1.35;
@@ -1771,10 +2066,11 @@ class Director {
     // instances slicing the same list get provably disjoint sets — otherwise
     // each would be picking every n-th entry of its own private shuffle and the
     // two could still land on the same system at the same time.
+    const systems = catalog(set);
     const pool = slice && slice.count > 1
-      ? ATTRACTORS.filter((_, i) => i % slice.count === slice.index)
-      : ATTRACTORS;
-    this.playlist = shuffle(pool.length ? pool : ATTRACTORS, rng);
+      ? systems.filter((_, i) => i % slice.count === slice.index)
+      : systems;
+    this.playlist = shuffle(pool.length ? pool : systems, rng);
     if (start) this.playlist = [start, ...this.playlist.filter(a => a !== start)];
     this.index = 0;
 
@@ -1787,6 +2083,10 @@ class Director {
   get current() { return this.playlist[this.index]; }
 
   palettePool() {
+    if (this.palette) {
+      const named = PALETTES.filter(p => p.name.toLowerCase() === this.palette.toLowerCase());
+      if (named.length) return named;
+    }
     if (this.theme === 'dark') return PALETTES.filter(p => p.dark);
     // An explicit request for paper is an explicit request for a light ground,
     // so it is honoured; oledSafe then leaves those palettes alone.
@@ -1819,9 +2119,9 @@ class Director {
       shadowColor: palette.shadowColor,
       shadow: r() < 0.7,
       shading: lerp(0.05, 0.3, r()),
-      width: lerp(4, 11, r() ** 1.5),
+      width: lerp(4, 8, r() ** 1.5),
       fade: lerp(0.1, 0.6, r()),
-      tailFade: lerp(0.08, 0.42, r()),
+      tailFade: lerp(0, 0.25, r()),
       // 0 colours by the particle's seed radius, 1 by its index. The notebook
       // offers only these two ends; a value between them is ours.
       colorBy: r() < 0.7 ? 0 : 1,
@@ -1844,7 +2144,7 @@ class Director {
 
     const { radius, bottom } = occupancy(
       this.scene.sim.readPositions(), style.transform, this.scene.camera.target);
-    this.margin = lerp(1.22, 1.55, this.rng());
+    this.margin = lerp(1.22, 1.55, this.rng()) / this.zoom;
     this.scene.camera.frameRadius(radius, this.margin);
 
     // Keep the floor just under the subject and grow the room to match, so a
@@ -1930,6 +2230,29 @@ class Director {
 }
 
 Object.assign(__exports, { Director });
+
+});
+
+__def("catalog.js", function (__exports, __req) {
+// Every system the screensaver knows, in named sets. `classic` is Reusser's
+// collection; `lie` holds the Lie brackets of dysts pairs that
+// tools/lie_pairs.py has built; `all` is both.
+
+const { ATTRACTORS } = __req('attractors.js');
+const { LIE_ATTRACTORS } = __req('lie-attractors.js');
+
+const SETS = {
+  classic: ATTRACTORS,
+  lie: LIE_ATTRACTORS,
+  all: [...ATTRACTORS, ...LIE_ATTRACTORS]
+};
+
+// An unknown or empty set falls back to the classics rather than a blank screen.
+const catalog = set => (SETS[set] && SETS[set].length ? SETS[set] : ATTRACTORS);
+
+const byName = name => SETS.all.find(a => a.name === name);
+
+Object.assign(__exports, { SETS, catalog, byName });
 
 });
 
@@ -2493,6 +2816,121 @@ Object.assign(__exports, { ATTRACTORS, byName });
 
 });
 
+__def("lie-attractors.js", function (__exports, __req) {
+// Generated by tools/lie_pairs.py from tools/lie-pairs.json. Do not edit.
+// Each entry is the Lie bracket [f, g] = (df/dx) g - (dg/dx) f of two dysts
+// systems, computed with autoLie. Regenerate: python tools/lie_pairs.py render
+
+const LIE_ATTRACTORS = [
+  {
+    name: "[DequanLi, Blasius]",
+    f: "DequanLi",
+    g: "Blasius",
+    deriv: `
+    -0.0016*x * x*y*z/(0.0025*x * x + 0.1*x + 1.0) + 0.4*x * x*y/(0.0025*x * x + 0.1*x + 1.0) - 0.2*x * x*z/(0.05*x + 1.0) + 11.0*x * x/(0.05*x + 1.0) - 0.4*x*y * y/(0.0025*x * x + 0.1*x + 1.0) + 0.16*x*y*z + 12.0*x*y/(0.05*x + 1.0) - 1.6*x*z + 0.0096*x + 8.0*y * y/(0.05*x + 1.0) - 40.0*y*z - 80.0*y,
+    0.0016*x * x*y*z/(0.0025*x * x + 0.1*x + 1.0) - 0.65*x * x*y - 0.4*x * x*y/(0.0025*x * x + 0.1*x + 1.0) + 0.2*x * x*z/(0.05*x + 1.0) - 11.0*x * x/(0.05*x + 1.0) + x*y * y + 0.4*x*y * y/(0.0025*x * x + 0.1*x + 1.0) - x*y*z + 0.168*x*y*z/(0.05*x + 1.0) - 3.0*x*y/(0.05*x + 1.0) - x*z * z + 63.0*x*z + 109.94*x - 8.0*y * y/(0.05*x + 1.0) + 1.833*y*z,
+    0.65*x * x*y + 0.46*x * x*y/(0.05*x + 1.0) - 7.8*x * x - x*y * y - 0.2*x*y * y/(0.05*x + 1.0) - x*y*z + 10.0*x*y + x*z * z - 55.0*x*z - 20.0*y*z + 0.10998`,
+    params: {},
+    dt: 6.487e-06,
+    initScale: 1.945,
+    initOrigin: [7.812, 6.909, 0.09177],
+    view: {"center": [-0.004312, -0.04954, -206.5], "size": [78.77, 78.77, 78.77], "rotation": [1.5707963268, 0, 0]},
+    refs: [{"title": "Lie bracket of DequanLi and Blasius, by autoLie", "authors": ["dysts", "autoLie"]}],
+    history: {"origin": "[DequanLi, Blasius] · a Lie bracket of two dysts systems", "text": ["This is neither system. It is the Lie bracket of two of them, [f, g] = (∂f/∂x) g − (∂g/∂x) f, with f the DequanLi flow and g the Blasius flow, at their published parameters. The bracket measures how far the two flows fail to commute: follow f then g for a moment, then f and g backwards, and you miss where you started by an amount proportional to [f, g].", "f — DequanLi: Related to the Three Scroll unified attractor TSUCS-2 Li, Phys Lett A. 2008: 387-393.", "g — Blasius:  A chaotic food web composed of interacting predators,, consumers, and vegetation. Blasius, Huppert, Stone. Nature 1999", "Its own flow is chaotic: nearby particles separate at roughly e^0.06 per crossing of the attractor.", "The bracket was traced to closed form, printed as GLSL, and checked against autoLie's autograd bracket on the attractor (agreement to 4e-16). [g, f] is the same field reversed: the same curves, run backwards, so its attractors are this one's repellers."], "sources": ["https://github.com/williamgilpin/dysts", "https://github.com/virati/autoLie"]},
+    lie: {"lyapunov": 0.06152, "bounded": true, "autolieError": 3.54e-16},
+  },
+  {
+    name: "[Hadley, SprottA]",
+    f: "Hadley",
+    g: "SprottA",
+    deriv: `
+    x*y + 4.0*x*z + 0.8*y - 2.0*z - 1.0,
+    -x * x - x*y*z + 4.0*x*z * z - 3.2*x - 3.0*y*z - z * z - z + 1.8,
+    -4.0*x * x + x*y * y - 4.0*x*y*z + x + 3.0*y * y + y*z + 2.0*y - 1.0`,
+    params: {},
+    dt: 0.007445,
+    initScale: 1.0,
+    initOrigin: [0.0, 0.0, 0.0],
+    view: {"center": [0.004072, 0.1791, -0.1604], "size": [3.437, 3.437, 3.437], "rotation": [1.5707963268, 0, 0]},
+    refs: [{"title": "Lie bracket of Hadley and SprottA, by autoLie", "authors": ["dysts", "autoLie"]}],
+    history: {"origin": "[Hadley, SprottA] · a Lie bracket of two dysts systems", "text": ["This is neither system. It is the Lie bracket of two of them, [f, g] = (∂f/∂x) g − (∂g/∂x) f, with f the Hadley flow and g the SprottA flow, at their published parameters. The bracket measures how far the two flows fail to commute: follow f then g for a moment, then f and g backwards, and you miss where you started by an amount proportional to [f, g].", "f — Hadley: An atmospheric convective cell. G. Hadley (1735). On the cause of the general trade winds. Philosophical Transactions of the Royal Society, vol. 34, pp. 58--62.", "g — SprottA: A member of the Sprott family of algebraically-simple chaotic sytems. Sprott (1994). Some simple chaotic flows. Physical Review E (1994).", "Its own flow is chaotic: nearby particles separate at roughly e^0.26 per crossing of the attractor.", "The bracket was traced to closed form, printed as GLSL, and checked against autoLie's autograd bracket on the attractor (agreement to 3e-16). [g, f] is the same field reversed: the same curves, run backwards, so its attractors are this one's repellers."], "sources": ["https://github.com/williamgilpin/dysts", "https://github.com/virati/autoLie"]},
+    lie: {"lyapunov": 0.2606, "bounded": true, "autolieError": 3.14e-16},
+  },
+  {
+    name: "[Hadley, Tsucs2]",
+    f: "Hadley",
+    g: "Tsucs2",
+    deriv: `
+    -2.0*x * x*y + 0.8*x * x*z - 40.0*x*y + 160.5*x*z + 0.5*y * y*z - 80.0*y * y + 32.0*y + 0.5*z * z * z - 41.666*z * z - 0.9*z + 32.0,
+    2.6*x * x * x + 0.5*x*y*z - 40.0*x*y - 2.0*x*z * z + 236.468*x*z - y * y*z + 40.0*y * y - 160.0*y*z - z * z * z + 1.8*z - 20.0,
+    -0.65*x * x * x + 0.39*x * x - 1.3*x*y * y + 2.0*x*y*z - 83.132*x*y - 0.8*x*z * z - 40.0*x*z + 1.34*x + y * y * y + 160.0*y * y + y*z * z + 40.0*y*z - 1.8*y`,
+    params: {},
+    dt: 4.539e-07,
+    initScale: 17.65,
+    initOrigin: [0.5224, 0.1174, 38.73],
+    view: {"center": [-169.9, -163.6, -84.85], "size": [362.3, 362.3, 362.3], "rotation": [1.5707963268, 0, 0]},
+    refs: [{"title": "Lie bracket of Hadley and Tsucs2, by autoLie", "authors": ["dysts", "autoLie"]}],
+    history: {"origin": "[Hadley, Tsucs2] · a Lie bracket of two dysts systems", "text": ["This is neither system. It is the Lie bracket of two of them, [f, g] = (∂f/∂x) g − (∂g/∂x) f, with f the Hadley flow and g the Tsucs2 flow, at their published parameters. The bracket measures how far the two flows fail to commute: follow f then g for a moment, then f and g backwards, and you miss where you started by an amount proportional to [f, g].", "f — Hadley: An atmospheric convective cell. G. Hadley (1735). On the cause of the general trade winds. Philosophical Transactions of the Royal Society, vol. 34, pp. 58--62.", "g — Tsucs2: A named attractor related to the DequanLi attractor Pan, Zhou, Li (2013). Synchronization of Three-Scroll Unified Chaotic System (TSUCS) and its hyper-chaotic system using active pinning control", "Its own flow is chaotic: nearby particles separate at roughly e^0.05 per crossing of the attractor.", "The bracket was traced to closed form, printed as GLSL, and checked against autoLie's autograd bracket on the attractor (agreement to 2e-15). [g, f] is the same field reversed: the same curves, run backwards, so its attractors are this one's repellers."], "sources": ["https://github.com/williamgilpin/dysts", "https://github.com/virati/autoLie"]},
+    lie: {"lyapunov": 0.0538, "bounded": true, "autolieError": 2.26e-15},
+  },
+  {
+    name: "[Lorenz, Rossler]",
+    f: "Lorenz",
+    g: "Rossler",
+    deriv: `
+    x*y - x*z + 38.0*x + 11.0*y + 7.333*z,
+    -x * x*z + 5.9*x*z + 3.2*x + y*z - 38.0*y + z * z - 28.0*z,
+    -x * x*y + x * x + 5.9*x*y + 10.0*x*z - y * y - 11.0*y*z - 0.5334`,
+    params: {},
+    respawn: 29.47,
+    dt: 8.094e-05,
+    initScale: 7.367,
+    initOrigin: [-0.4471, -0.3125, 23.55],
+    view: {"center": [-0.4471, -0.3125, 23.55], "size": [29.47, 29.47, 29.47], "rotation": [1.5707963268, 0, 0]},
+    refs: [{"title": "Lie bracket of Lorenz and Rossler, by autoLie", "authors": ["dysts", "autoLie"]}],
+    history: {"origin": "[Lorenz, Rossler] · a Lie bracket of two dysts systems", "text": ["This is neither system. It is the Lie bracket of two of them, [f, g] = (∂f/∂x) g − (∂g/∂x) f, with f the Lorenz flow and g the Rossler flow, at their published parameters. The bracket measures how far the two flows fail to commute: follow f then g for a moment, then f and g backwards, and you miss where you started by an amount proportional to [f, g].", "f — Lorenz: A minimal weather model based on atmospheric convection. Lorenz, Edward N (1963). Deterministic nonperiodic flow. Journal of the atmospheric sciences 20.2 (1963): 130-141.", "g — Rossler: Spiral-type chaos in a simple oscillator model. Rossler, O. E. (1976), An Equation for Continuous Chaos, Physics Letters, 57A (5): 3972013398,", "Neither [f, g] nor [g, f] has a bounded attractor at these parameters: from every seed tried, particles either escape to infinity or stall at a fixed point. What you see is the field's flow near f's attractor, each particle re-seeded there once it runs away. When f and g both have constant divergence, as Lorenz and most of Sprott's systems do, the bracket is volume-preserving and cannot have an attractor at all.", "The bracket was traced to closed form, printed as GLSL, and checked against autoLie's autograd bracket on the attractor (agreement to 4e-16). [g, f] is the same field reversed: the same curves, run backwards, so its attractors are this one's repellers."], "sources": ["https://github.com/williamgilpin/dysts", "https://github.com/virati/autoLie"]},
+    lie: {"lyapunov": null, "bounded": false, "autolieError": 3.81e-16},
+  },
+  {
+    name: "[Rossler, SaltonSea]",
+    f: "Rossler",
+    g: "SaltonSea",
+    deriv: `
+    0.115*x * x - 0.147*x*y - 0.11*x*z - 0.115*y * y - 0.115*y*z + 5.5*y*z/(y + 15.0) + 25.4*y + 30.3*z,
+    -0.115*x * x - 15.5*x*y*z/(y * y + 30.0*y + 225.0) + 15.5*x*y*z/(y + 15.0) - 0.115*x*y + 15.5*x*z/(y + 15.0) + 25.4*x - 3.1*y * y*z/(y * y + 30.0*y + 225.0) + 0.06*y * y + 0.06*y*z - 88.35*y*z/(y + 15.0) + 3.1*y/(y + 15.0),
+    -0.055*x * x*z - 0.115*x*y*z + 10.0*x*y*z/(y * y + 30.0*y + 225.0) + 22.0*x*z - 10.0*x*z/(y + 15.0) + 2.0*y * y*z/(y * y + 30.0*y + 225.0) - 2.0*y*z/(y + 15.0) - 2.0*y/(y + 15.0) + 1.66`,
+    params: {},
+    dt: 6.412e-05,
+    initScale: 1.947,
+    initOrigin: [6.513, 0.4772, 0.3416],
+    view: {"center": [2.778, 232.9, 207.1], "size": [321.6, 321.6, 321.6], "rotation": [1.5707963268, 0, 0]},
+    refs: [{"title": "Lie bracket of Rossler and SaltonSea, by autoLie", "authors": ["dysts", "autoLie"]}],
+    history: {"origin": "[Rossler, SaltonSea] · a Lie bracket of two dysts systems", "text": ["This is neither system. It is the Lie bracket of two of them, [f, g] = (∂f/∂x) g − (∂g/∂x) f, with f the Rossler flow and g the SaltonSea flow, at their published parameters. The bracket measures how far the two flows fail to commute: follow f then g for a moment, then f and g backwards, and you miss where you started by an amount proportional to [f, g].", "f — Rossler: Spiral-type chaos in a simple oscillator model. Rossler, O. E. (1976), An Equation for Continuous Chaos, Physics Letters, 57A (5): 3972013398,", "g — SaltonSea: An eco-epidemiological model of bird and fish abundances in the Salton sea of southern California. Upadhyay, Bairagi, Kundu, Chattopadhyay (2007).Chaos in eco-epidemiological problem of the Salton Sea and its possible control. Applied mathematics and computation.", "Its own flow is chaotic: nearby particles separate at roughly e^0.09 per crossing of the attractor.", "The bracket was traced to closed form, printed as GLSL, and checked against autoLie's autograd bracket on the attractor (agreement to 5e-16). [g, f] is the same field reversed: the same curves, run backwards, so its attractors are this one's repellers."], "sources": ["https://github.com/williamgilpin/dysts", "https://github.com/virati/autoLie"]},
+    lie: {"lyapunov": 0.08897, "bounded": true, "autolieError": 4.76e-16},
+  },
+  {
+    name: "[Rossler, SprottA]",
+    f: "Rossler",
+    g: "SprottA",
+    deriv: `
+    y * y - y*z - 0.2*y - 1.0,
+    -x*y*z - x*z - 0.2*x + 5.7*y*z - 0.2*y - z,
+    -x*y * y + 2.0*x*y + x + 6.1*y * y + y*z - 5.7`,
+    params: {},
+    dt: 0.01296,
+    initScale: 1.947,
+    initOrigin: [6.513, 0.4772, 0.3416],
+    view: {"center": [2.685, -0.1149, -0.7008], "size": [4.415, 4.415, 4.415], "rotation": [1.5707963268, 0, 0]},
+    refs: [{"title": "Lie bracket of Rossler and SprottA, by autoLie", "authors": ["dysts", "autoLie"]}],
+    history: {"origin": "[Rossler, SprottA] · a Lie bracket of two dysts systems", "text": ["This is neither system. It is the Lie bracket of two of them, [f, g] = (∂f/∂x) g − (∂g/∂x) f, with f the Rossler flow and g the SprottA flow, at their published parameters. The bracket measures how far the two flows fail to commute: follow f then g for a moment, then f and g backwards, and you miss where you started by an amount proportional to [f, g].", "f — Rossler: Spiral-type chaos in a simple oscillator model. Rossler, O. E. (1976), An Equation for Continuous Chaos, Physics Letters, 57A (5): 3972013398,", "g — SprottA: A member of the Sprott family of algebraically-simple chaotic sytems. Sprott (1994). Some simple chaotic flows. Physical Review E (1994).", "Its own flow is chaotic: nearby particles separate at roughly e^0.26 per crossing of the attractor.", "The bracket was traced to closed form, printed as GLSL, and checked against autoLie's autograd bracket on the attractor (agreement to 8e-16). [g, f] is the same field reversed: the same curves, run backwards, so its attractors are this one's repellers."], "sources": ["https://github.com/williamgilpin/dysts", "https://github.com/virati/autoLie"]},
+    lie: {"lyapunov": 0.2597, "bounded": true, "autolieError": 7.61e-16},
+  },
+];
+
+Object.assign(__exports, { LIE_ATTRACTORS });
+
+});
+
 __def("palettes.js", function (__exports, __req) {
 // Colour schemes. `color1` → `color2` is the gradient across trajectories;
 // `border` is the ink that separates overlapping strands.
@@ -2514,6 +2952,9 @@ const raw = [
   { name: 'Rust Bloom', dark: true, bg: '#0f0709', c1: '#c04a2c', c2: '#ffd9a0', border: '#1c0806', grid: '#b0705e' },
   { name: 'Aurora',     dark: true, bg: '#040a0c', c1: '#1a7ba6', c2: '#a7ffcf', border: '#010607', grid: '#48a0a8' },
   // --- paper --------------------------------------------------------------
+  // Part 1 of the notebook: its two constants, on white, with a white rim
+  // that parts every crossing.
+  { name: 'Reusser',    dark: false, bg: '#ffffff', c1: '#8ce3a6', c2: '#1c51a6', border: '#ffffff', grid: '#000000' },
   { name: 'Notebook',   dark: false, bg: '#ffffff', c1: '#2f6ad0', c2: '#8de2a7', border: '#492727', grid: '#000000' },
   { name: 'Blueprint',  dark: false, bg: '#eef3fa', c1: '#123a73', c2: '#5fb0d8', border: '#12243d', grid: '#20406b' },
   { name: 'Risograph',  dark: false, bg: '#f7f1e6', c1: '#d0245c', c2: '#2a4fc4', border: '#3a2018', grid: '#6b5a48' }
@@ -2686,7 +3127,8 @@ class HistoryPanel {
   }
 
   show(attractor) {
-    const entry = HISTORY[attractor.name];
+    // Generated systems (the Lie brackets) carry their own notes.
+    const entry = attractor.history || HISTORY[attractor.name];
     this.root.classList.toggle('empty', !entry);
     this.originEl.textContent = entry ? entry.origin : '';
 

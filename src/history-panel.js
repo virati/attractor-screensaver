@@ -48,7 +48,8 @@ export class HistoryPanel {
   }
 
   show(attractor) {
-    const entry = HISTORY[attractor.name];
+    // Generated systems (the Lie brackets) carry their own notes.
+    const entry = attractor.history || HISTORY[attractor.name];
     this.root.classList.toggle('empty', !entry);
     this.originEl.textContent = entry ? entry.origin : '';
 

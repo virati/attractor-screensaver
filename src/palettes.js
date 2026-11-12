@@ -18,6 +18,9 @@ const raw = [
   { name: 'Rust Bloom', dark: true, bg: '#0f0709', c1: '#c04a2c', c2: '#ffd9a0', border: '#1c0806', grid: '#b0705e' },
   { name: 'Aurora',     dark: true, bg: '#040a0c', c1: '#1a7ba6', c2: '#a7ffcf', border: '#010607', grid: '#48a0a8' },
   // --- paper --------------------------------------------------------------
+  // Part 1 of the notebook: its two constants, on white, with a white rim
+  // that parts every crossing.
+  { name: 'Reusser',    dark: false, bg: '#ffffff', c1: '#8ce3a6', c2: '#1c51a6', border: '#ffffff', grid: '#000000' },
   { name: 'Notebook',   dark: false, bg: '#ffffff', c1: '#2f6ad0', c2: '#8de2a7', border: '#492727', grid: '#000000' },
   { name: 'Blueprint',  dark: false, bg: '#eef3fa', c1: '#123a73', c2: '#5fb0d8', border: '#12243d', grid: '#20406b' },
   { name: 'Risograph',  dark: false, bg: '#f7f1e6', c1: '#d0245c', c2: '#2a4fc4', border: '#3a2018', grid: '#6b5a48' }

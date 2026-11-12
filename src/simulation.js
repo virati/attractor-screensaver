@@ -49,6 +49,16 @@ function integrateFrag(attractor) {
   const names = Object.keys(params);
   const decls = names.length ? names.map(n => `uniform float ${n};`).join('\n') : '';
   const deriv = attractor.deriv.trim().split('\n').map(l => '    ' + l.trim()).join('\n');
+  // `respawn` (generated systems that have no bounded attractor) re-seeds a
+  // particle in the starting blob once it is this far from it, so what is on
+  // screen stays the field's behaviour near where it was seeded.
+  const glf = v => (Number.isInteger(v) ? v.toFixed(1) : String(v));
+  const respawn = attractor.respawn
+    ? `if (length(p - uOrigin) > ${glf(attractor.respawn)}) {
+      p = uOrigin + ${glf(attractor.initScale ?? 1)} * sphericalRandom(float(row) + 0.5 + t);
+      fresh = 0.0;
+    }`
+    : '';
   return `#version 300 es
 precision highp float;
 uniform sampler2D uSrc;
@@ -72,6 +82,9 @@ void main () {
   vec3 p = texelFetch(uSrc, ivec2(uColumn, row), 0).xyz;
   float t = uT;
   float dt = uDt;
+  // 0 marks a sample that was re-seeded rather than integrated, so the trail
+  // renderer does not draw a streak from where it was to where it restarted.
+  float fresh = 1.0;
 
   for (int i = 0; i < uSubsteps; i++) {
     vec3 k1 = D(p, t);
@@ -84,10 +97,11 @@ void main () {
     // Trajectories that escape get pulled back toward the origin along the
     // same ray; ones that go non-finite are re-seeded from scratch.
     float m = dot(p, p);
-    if (!(m < 1e12)) p = uOrigin + sphericalRandom(float(row) + 0.5 + t);
-    else if (m > 1e6) p *= 0.0001;
+    if (!(m < 1e12)) { p = uOrigin + sphericalRandom(float(row) + 0.5 + t); fresh = 0.0; }
+    else if (m > 1e6) { p *= 0.0001; fresh = 0.0; }
+    ${respawn}
   }
-  fragColor = vec4(p, 1.0);
+  fragColor = vec4(p, fresh);
 }`;
 }
 

@@ -7,6 +7,8 @@
 #   attractors --continuous    # drift each system's parameters while it plays
 #   attractors --bright        # designed backgrounds instead of OLED true black
 #   attractors --windowed      # normal browser window instead of fullscreen kiosk
+#   attractors --lie           # cycle the Lie brackets built by tools/lie_pairs.py
+#   attractors --bracket Lorenz Rossler   # build (if needed) and hold one dysts pair's bracket
 #
 # Anything else you pass is appended to the page's query string, e.g.
 #   attractors --idle duration=30 theme=dark particles=2048
@@ -17,14 +19,21 @@ QUERY=()
 KIOSK=1
 ALL_DISPLAYS=0
 
-for arg in "$@"; do
+BRACKET=()
+
+while [[ $# -gt 0 ]]; do
+  arg="$1"; shift
   case "$arg" in
     --idle|-i)         QUERY+=("idle=1") ;;
     --continuous|-c)   QUERY+=("continuous=1") ;;
     --bright|-b)       QUERY+=("oled=0") ;;
     --windowed|-w)     KIOSK=0 ;;
     --all-displays|-a) ALL_DISPLAYS=1 ;;
-    --help|-h)         sed -n '2,12p' "$0" | sed 's/^# \?//'; exit 0 ;;
+    --lie|-l)          QUERY+=("set=lie") ;;
+    --bracket|-L)
+      [[ $# -ge 2 ]] || { echo "--bracket needs two dysts system names" >&2; exit 2; }
+      BRACKET=("$1" "$2"); shift 2 ;;
+    --help|-h)         sed -n '2,14p' "$0" | sed 's/^# \?//'; exit 0 ;;
     -*)                echo "unknown option: $arg" >&2; exit 2 ;;
     *)                 QUERY+=("$arg") ;;
   esac
@@ -32,6 +41,21 @@ done
 
 PY_BIN="${PYTHON:-python3}"
 command -v "$PY_BIN" >/dev/null || { echo "python3 is required" >&2; exit 1; }
+
+# --bracket F G: the bracket is built by tools/lie_pairs.py, which needs dysts
+# and autoLie, so it runs in the repo's venv (see README) unless told otherwise.
+if [[ ${#BRACKET[@]} -eq 2 ]]; then
+  LIE_PY="${ATTRACTORS_LIE_PYTHON:-$ROOT/.venv/bin/python}"
+  [[ -x "$LIE_PY" ]] || { echo "no venv at $ROOT/.venv; see 'Lie brackets' in the README" >&2; exit 1; }
+  if ! NAME="$("$LIE_PY" "$ROOT/tools/lie_pairs.py" name "${BRACKET[@]}")"; then
+    "$LIE_PY" "$ROOT/tools/lie_pairs.py" add "${BRACKET[@]}" >&2 || exit 1
+    NAME="$("$LIE_PY" "$ROOT/tools/lie_pairs.py" name "${BRACKET[@]}")"
+  fi
+  ENC="$("$PY_BIN" -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "$NAME")"
+  # Held on screen indefinitely; a duration= passed on the command line comes
+  # earlier in the query string and wins.
+  QUERY+=("set=lie" "attractor=$ENC" "duration=0")
+fi
 
 BROWSER_PIDS=()
 PROFILE_DIRS=()

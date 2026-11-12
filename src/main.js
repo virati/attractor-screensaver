@@ -3,7 +3,6 @@
 import { createContext } from './glutil.js';
 import { Scene } from './scene.js';
 import { Director } from './director.js';
-import { ATTRACTORS } from './attractors.js';
 import { Drift } from './drift.js';
 import { HistoryPanel } from './history-panel.js';
 import { equations, parameterLine, parameterValues, reference } from './format.js';
@@ -15,6 +14,28 @@ const num = (key, fallback) => {
 };
 const flag = key => params.has(key) && params.get(key) !== '0' && params.get(key) !== 'false';
 
+// Named looks: a palette, a framing, a particle count and a set of pinned trail
+// settings. Anything given explicitly on the query string still wins.
+//
+// `notebook` is Part 1 of Reusser's notebook, value for value: 20 particles
+// with 100-sample tracks on white, a constant 5 px stroke coloured by particle
+// index from mint to blue, and an edge that fades to white from half the
+// radius out, so a line in front is parted from whatever it crosses. No
+// taper, shading, tail fade, room or shadow.
+const LOOKS = {
+  notebook: {
+    palette: 'Reusser',
+    oled: false,
+    particles: 20,
+    steps: 100,
+    trail: {
+      width: 5, fade: 0, tailFade: 0, colorBy: 1,
+      shading: 0, borderOpacity: 1, borderWidth: 0.9, gridOpacity: 0, shadow: false
+    }
+  }
+};
+const LOOK = LOOKS[params.get('look')] || {};
+
 const OPTS = {
   idle: flag('idle'),
   duration: num('duration', 300),
@@ -22,14 +43,20 @@ const OPTS = {
   continuous: flag('continuous'),
   sweep: num('sweep', 0.12),
   sweepPeriod: Math.max(4, num('sweepPeriod', 55)),
-  particles: Math.max(64, Math.min(4096, num('particles', 1024))),
+  particles: Math.max(1, Math.min(4096, num('particles', LOOK.particles ?? 384))),
+  // A count that was asked for (by a look or particles=) is held; otherwise the
+  // quality ladder scales it with the frame rate.
+  pinParticles: params.has('particles') || LOOK.particles !== undefined,
   // Two samples is one segment, which is the shortest a trail can be and still
   // have a direction; one sample would divide by zero working out where along
   // the trail a vertex sits.
-  steps: Math.max(2, Math.min(512, num('steps', 180))),
+  steps: Math.max(2, Math.min(512, num('steps', LOOK.steps ?? 50))),
   speed: num('speed', 1),
   theme: params.get('theme') || 'any',
   attractor: params.get('attractor'),
+  // Which systems to cycle: `classic` (Reusser's), `lie` (Lie brackets of
+  // dysts pairs, built by tools/lie_pairs.py) or `all`.
+  set: params.get('set') || 'classic',
   // The notebook renders at the full devicePixelRatio; 1.75 clipped that on a
   // panel scaled past it, costing resolution to save fill rate the quality
   // ladder is already there to manage.
@@ -38,7 +65,11 @@ const OPTS = {
   history: params.get('history') !== '0',
   // On by default: true-black grounds, and dark palettes only unless a light
   // one was asked for outright. `oled=0` restores the designed backgrounds.
-  oled: params.get('oled') !== '0',
+  oled: params.has('oled') ? params.get('oled') !== '0' : LOOK.oled ?? true,
+  // Pin one palette by name (see src/palettes.js), and frame tighter (>1) or
+  // looser (<1) than the director would.
+  palette: params.get('palette') || LOOK.palette || null,
+  zoom: Math.max(0.2, num('zoom', LOOK.zoom ?? 1)),
   // Multi-display: `label` names the window so the compositor can place it,
   // and `slice=i/n` gives each instance a disjoint share of the systems.
   label: params.get('label'),
@@ -50,6 +81,13 @@ const OPTS = {
   // opaquely. Blended, every disc shows through and the trails read as chains
   // of beads. `blend=1` if you want to see it.
   blend: flag('blend'),
+  // The scene is drawn offscreen at the GPU's highest multisample count (msaa=
+  // to cap it), then bloomed. post=0 draws straight to the canvas as before;
+  // bloom=0 keeps the antialiasing and drops the glow.
+  post: params.get('post') !== '0',
+  msaa: Math.max(0, num('msaa', 0)),
+  bloom: Math.max(0, num('bloom', 0.55)),
+  bloomThreshold: Math.max(0, num('bloomThreshold', 0.3)),
   seed: params.has('seed') ? num('seed', 1) : null,
   // Seconds to ignore input for after loading. With one window a moment is
   // plenty; with several, the later ones are still being mapped and placed
@@ -68,7 +106,7 @@ function sliceOf(spec) {
 // The look of the trail is rerolled per shot unless it is pinned here. Only the
 // keys actually given are overridden, so `width=2` still gets a random taper.
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-const TRAIL = {};
+const TRAIL = { ...(LOOK.trail || {}) };
 if (params.has('width')) TRAIL.width = clamp(num('width', 7), 0.5, 40);
 if (params.has('taper')) TRAIL.fade = clamp(num('taper', 0.35), 0, 2);
 if (params.has('tailFade')) TRAIL.tailFade = clamp(num('tailFade', 0.25), 0, 1);
@@ -94,7 +132,9 @@ export async function boot() {
   if (OPTS.label) document.title = `Attractors ${OPTS.label}`;
 
   const canvas = el('gl');
-  const gl = createContext(canvas, { antialias: true });
+  // With post-processing the canvas is only ever a fullscreen copy target, so
+  // its own multisample buffer would be memory spent on nothing.
+  const gl = createContext(canvas, { antialias: !OPTS.post });
 
   // Quality ladder, walked only between shots so changes are never visible.
   //
@@ -105,14 +145,19 @@ export async function boot() {
   // first time a frame ran long — and since a rung once lost is never climbed
   // back to, overruled for the rest of the session.
   const LADDER = [0.25, 0.5, 0.75, 1, 2].map(scale => ({
-    particles: Math.max(64, Math.min(4096, Math.round(OPTS.particles * scale))),
+    particles: OPTS.pinParticles
+      ? OPTS.particles
+      : Math.max(64, Math.min(4096, Math.round(OPTS.particles * scale))),
     steps: OPTS.steps
   }));
   let rung = 3;
   let pendingRung = 3;
   let ceilingRung = LADDER.length - 1;
 
-  const scene = new Scene(gl, LADDER[rung]);
+  const scene = new Scene(gl, {
+    ...LADDER[rung],
+    post: OPTS.post ? { samples: OPTS.msaa, bloom: OPTS.bloom, threshold: OPTS.bloomThreshold } : null
+  });
 
   // --continuous: walk the parameters instead of holding them fixed.
   const drift = OPTS.continuous
@@ -130,9 +175,12 @@ export async function boot() {
     theme: OPTS.theme,
     rng: OPTS.seed === null ? Math.random : mulberry32(OPTS.seed),
     pinned: OPTS.attractor,
+    set: OPTS.set,
     drift,
     trail: Object.keys(TRAIL).length ? TRAIL : null,
     oled: OPTS.oled,
+    palette: OPTS.palette,
+    zoom: OPTS.zoom,
     blend: OPTS.blend,
     slice: sliceOf(OPTS.slice),
     quality: () => { rung = pendingRung; return LADDER[rung]; },
@@ -149,7 +197,7 @@ export async function boot() {
     el('params').textContent = parameterLine(attractor);
     el('ref').textContent = reference(attractor);
     el('counter').textContent =
-      `${String(dir.index + 1).padStart(2, '0')} / ${ATTRACTORS.length}`;
+      `${String(dir.index + 1).padStart(2, '0')} / ${dir.playlist.length}`;
     el('palette').textContent = style.palette.name;
     if (history) history.show(attractor);
   }

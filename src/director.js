@@ -1,7 +1,7 @@
 // Runs the show: shuffles through the attractors, dresses each one in a
 // different palette and camera move, and cross-fades between them.
 
-import { ATTRACTORS, byName } from './attractors.js';
+import { catalog, byName } from './catalog.js';
 import { PALETTES, oledSafe } from './palettes.js';
 import { viewTransform } from './mat4.js';
 
@@ -63,6 +63,9 @@ export class Director {
     trail = null,
     oled = true,
     slice = null,
+    set = 'classic',
+    palette = null,
+    zoom = 1,
     blend = true,
     onChange = () => {}
   } = {}) {
@@ -76,6 +79,8 @@ export class Director {
     this.trail = trail;
     this.oled = oled;
     this.blend = blend;
+    this.palette = palette;
+    this.zoom = zoom;
     this.onChange = onChange;
     this.paused = false;
     this.margin = 1.35;
@@ -86,10 +91,11 @@ export class Director {
     // instances slicing the same list get provably disjoint sets — otherwise
     // each would be picking every n-th entry of its own private shuffle and the
     // two could still land on the same system at the same time.
+    const systems = catalog(set);
     const pool = slice && slice.count > 1
-      ? ATTRACTORS.filter((_, i) => i % slice.count === slice.index)
-      : ATTRACTORS;
-    this.playlist = shuffle(pool.length ? pool : ATTRACTORS, rng);
+      ? systems.filter((_, i) => i % slice.count === slice.index)
+      : systems;
+    this.playlist = shuffle(pool.length ? pool : systems, rng);
     if (start) this.playlist = [start, ...this.playlist.filter(a => a !== start)];
     this.index = 0;
 
@@ -102,6 +108,10 @@ export class Director {
   get current() { return this.playlist[this.index]; }
 
   palettePool() {
+    if (this.palette) {
+      const named = PALETTES.filter(p => p.name.toLowerCase() === this.palette.toLowerCase());
+      if (named.length) return named;
+    }
     if (this.theme === 'dark') return PALETTES.filter(p => p.dark);
     // An explicit request for paper is an explicit request for a light ground,
     // so it is honoured; oledSafe then leaves those palettes alone.
@@ -134,9 +144,9 @@ export class Director {
       shadowColor: palette.shadowColor,
       shadow: r() < 0.7,
       shading: lerp(0.05, 0.3, r()),
-      width: lerp(4, 11, r() ** 1.5),
+      width: lerp(4, 8, r() ** 1.5),
       fade: lerp(0.1, 0.6, r()),
-      tailFade: lerp(0.08, 0.42, r()),
+      tailFade: lerp(0, 0.25, r()),
       // 0 colours by the particle's seed radius, 1 by its index. The notebook
       // offers only these two ends; a value between them is ours.
       colorBy: r() < 0.7 ? 0 : 1,
@@ -159,7 +169,7 @@ export class Director {
 
     const { radius, bottom } = occupancy(
       this.scene.sim.readPositions(), style.transform, this.scene.camera.target);
-    this.margin = lerp(1.22, 1.55, this.rng());
+    this.margin = lerp(1.22, 1.55, this.rng()) / this.zoom;
     this.scene.camera.frameRadius(radius, this.margin);
 
     // Keep the floor just under the subject and grow the room to match, so a

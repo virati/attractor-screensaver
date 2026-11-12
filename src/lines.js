@@ -1,9 +1,9 @@
-// Trail renderer. Every visible segment and every joint is an instanced quad
-// whose corners are placed in screen space by the vertex shader, so line width
-// is in pixels and independent of depth. Round joints come from an SDF the
-// fragment shader turns into alpha, resolved by alpha-to-coverage against the
-// multisampled default framebuffer -- that keeps the pass opaque, so trails can
-// depth-test against each other without any sorting.
+// Trail renderer. Every visible segment is an instanced capsule whose corners
+// are placed in screen space by the vertex shader, so line width is in pixels
+// and independent of depth. The round ends come from an SDF the fragment shader
+// turns into alpha, resolved by alpha-to-coverage against a multisampled target
+// -- that keeps the pass opaque, so trails depth-test against each other
+// without any sorting.
 
 import { program } from './glutil.js';
 
@@ -16,13 +16,13 @@ layout(location = 0) in vec2 corner;   // (0..1, 0..1)
 uniform mat4 uProjView, uTransform;
 uniform sampler2D uState;
 uniform ivec4 uRing;      // steps, particles, head, filled
-uniform int uSegsPerTrail, uMode, uShadow, uBlend;
+uniform int uSegsPerTrail, uShadow, uBlend;
 uniform vec2 uResolution; // device pixels
 uniform float uWidth, uFade, uTailFade, uColorMode, uFloorY;
 uniform vec3 uColor1, uColor2, uBackground, uShadowColor;
 
-out vec2 vLineCoord;
-out float vWidth, vShade, vBorderMix;
+out vec3 vCapsule;   // (pixels along from A, pixels across, segment length)
+out vec2 vRadius;    // radius at A and at B, pixels
 out vec4 vColor;
 
 vec3 quasirandom (float n) {
@@ -37,6 +37,13 @@ vec4 clipOf (int particle, int slot) {
   return uProjView * world;
 }
 
+// The simulation writes w = 0 into a sample it had to re-seed rather than
+// integrate, so the segment arriving at it is a jump, not a piece of trail.
+bool reseeded (int particle, int slot) {
+  int column = (uRing.z + 1 + slot) % uRing.x;
+  return texelFetch(uState, ivec2(column, particle), 0).w < 0.5;
+}
+
 float widthAt (float param) {
   return uWidth * exp(-3.0 * uFade * (1.0 - param));
 }
@@ -48,6 +55,7 @@ void main () {
 
   // Slots older than what has actually been simulated are collapsed away.
   bool alive = slot >= steps - uRing.w;
+  if (reseeded(particle, slot + 1)) alive = false;
 
   float denom = float(steps - 1);
   float paramA = float(slot) / denom;
@@ -55,13 +63,12 @@ void main () {
   float pn = (float(particle) + 0.5) / float(uRing.y);
 
   vec4 clipA = clipOf(particle, slot);
-  vec4 clipB = uMode == 0 ? clipOf(particle, slot + 1) : clipA;
+  vec4 clipB = clipOf(particle, slot + 1);
 
   if (!alive || clipA.w <= 0.0 || clipB.w <= 0.0) {
     gl_Position = vec4(0.0, 0.0, 2.0, 1.0);  // behind the far plane: clipped
-    vLineCoord = vec2(0.0);
-    vWidth = 1.0;
-    vShade = 0.0;
+    vCapsule = vec3(0.0);
+    vRadius = vec2(1.0);
     vColor = vec4(0.0);
     return;
   }
@@ -72,54 +79,32 @@ void main () {
   float zA = clipA.z / clipA.w;
   float zB = clipB.z / clipB.w;
 
-  float along, across, param, z;
-  vec2 px;
+  // Each segment is a capsule: the quad runs a radius past both ends and the
+  // fragment shader rounds them off. Consecutive capsules overlap at the
+  // joint at the same depth, so a bend gets a round join with no second pass.
+  // (Joints used to be separate discs pushed just behind the segments, and
+  // wherever another trail sat at nearly the same depth it won inside the
+  // wedge, which with wide strokes read as teeth down every trail.)
+  float rA = 0.5 * widthAt(paramA);
+  float rB = 0.5 * widthAt(paramB);
+  float r = max(rA, rB);
+  vec2 d = pxB - pxA;
+  float len = length(d);
+  vec2 dir = len > 1e-5 ? d / len : vec2(1.0, 0.0);
+  vec2 nrm = vec2(-dir.y, dir.x);
+  float along = mix(-r, len + r, corner.x);
+  float across = (corner.y * 2.0 - 1.0) * r;
+  vec2 px = pxA + dir * along + nrm * across;
+  float t = len > 1e-5 ? clamp(along / len, 0.0, 1.0) : 0.0;
+  float z = mix(zA, zB, t);
+  float param = mix(paramA, paramB, t);
+  vCapsule = vec3(along, across, len);
+  vRadius = vec2(rA, rB);
 
-  if (uMode == 0) {
-    along = corner.x;
-    across = corner.y * 2.0 - 1.0;
-    param = mix(paramA, paramB, along);
-    vWidth = widthAt(param);
-    vec2 d = pxB - pxA;
-    float len = length(d);
-    vec2 dir = len > 1e-5 ? d / len : vec2(1.0, 0.0);
-    px = mix(pxA, pxB, along) + vec2(-dir.y, dir.x) * across * (0.5 * vWidth);
-    z = mix(zA, zB, along);
-    vLineCoord = vec2(0.0, across);
-    vShade = across;
-    vBorderMix = 1.0;
-  } else {
-    vec2 c = corner * 2.0 - 1.0;
-    param = paramA;
-    vWidth = widthAt(param);
-    px = pxA + c * (0.5 * vWidth);
-    // Nudged away from the eye so the segments drawn afterwards win wherever
-    // they overlap, leaving only the part of the disc that is a real joint.
-    z = zA + 1e-5;
-    vLineCoord = c;
-
-    // Shade the disc across the stroke, not radially, so a joint does not
-    // read as a bead threaded onto the line.
-    int neighbour = slot < steps - 1 ? slot + 1 : slot - 1;
-    vec4 clipN = clipOf(particle, neighbour);
-    vec2 tangent = vec2(1.0, 0.0);
-    if (clipN.w > 0.0) {
-      vec2 delta = (clipN.xy / clipN.w) * halfRes - pxA;
-      if (length(delta) > 1e-5) tangent = normalize(delta);
-    }
-    vShade = dot(c, vec2(-tangent.y, tangent.x));
-
-    // The border ink is drawn at the edge of whatever primitive is being
-    // rasterised, and a joint is a whole disc, so it was getting a complete
-    // dark ring -- one per trail sample, which reads as a black seam chopping
-    // the trail into segments. The ink is wanted where the disc forms the side
-    // of the stroke and not where it butts up against the segments either side,
-    // so it fades out along the direction of travel.
-    vBorderMix = clamp(1.0 - abs(dot(c, tangent)) * 1.7, 0.0, 1.0);
-  }
-
-  // Per-trail depth nudge, so trails that overlap exactly do not z-fight.
-  z -= 0.0001 * abs(pn - 0.5);
+  // Per-trail depth nudge, so trails that overlap exactly do not z-fight. It
+  // has to be distinct per trail: abs(pn - 0.5) gave trails i and n-1-i the
+  // same nudge, and those two then traded places from segment to segment.
+  z -= 0.0001 * pn;
 
   gl_Position = vec4(px / halfRes, z, 1.0);
 
@@ -144,12 +129,12 @@ const FRAG = `#version 300 es
 precision highp float;
 precision highp int;
 
-in vec2 vLineCoord;
-in float vWidth, vShade, vBorderMix;
+in vec3 vCapsule;
+in vec2 vRadius;
 in vec4 vColor;
 
 uniform int uShadow, uBlend;
-uniform float uShading;
+uniform float uShading, uDither;
 uniform vec2 uBorderWidth;
 uniform vec4 uBorderColor;
 
@@ -166,11 +151,15 @@ float dither (vec2 p) {
 }
 
 void main () {
-  float sdf = length(vLineCoord);
+  float along = vCapsule.x, across = vCapsule.y, len = vCapsule.z;
+  float r = mix(vRadius.x, vRadius.y, len > 1e-5 ? clamp(along / len, 0.0, 1.0) : 0.0);
+  float beyond = max(-along, along - len);       // > 0 inside the round ends
+  float sdf = length(vec2(max(beyond, 0.0), across)) / r;
 
-  float edge = linearstep(1.0, 1.0 - 2.0 / vWidth, sdf) * vColor.a;
+  // A pixel-wide feather, resolved by alpha-to-coverage.
+  float edge = linearstep(1.0, 1.0 - 1.0 / r, sdf) * vColor.a;
   // Nothing invisible should reach the depth buffer and block what is behind it.
-  if (uBlend == 1 && edge < 0.004) discard;
+  if (edge < 0.004) discard;
 
   if (uShadow == 1) {
     fragColor = vec4(vColor.rgb, edge);
@@ -178,15 +167,19 @@ void main () {
   }
 
   // A cheap cylindrical highlight across the width of the stroke.
-  float highlight = 1.0 - vShade * vShade;
+  float shade01 = across / r;
+  float highlight = 1.0 - shade01 * shade01;
   float shade = mix(1.0, highlight, uShading);
   shade = mix(shade, 1.0, uShading * highlight * 0.7);
 
-  vec2 threshold = 1.0 - uBorderWidth / vWidth;
+  vec2 threshold = 1.0 - uBorderWidth / (2.0 * r);
   float isBorder = linearstep(threshold.x, threshold.y, sdf);
+  // Ink the sides only. A cap mostly lies over the neighbouring segment, and
+  // inked it would draw a ring across the stroke at every sample.
+  float sides = 1.0 - linearstep(0.0, 0.5 * r, beyond);
 
-  vec3 rgb = mix(vColor.rgb * shade, uBorderColor.rgb, isBorder * uBorderColor.a * vBorderMix);
-  fragColor = vec4(rgb + dither(gl_FragCoord.xy) / 255.0, edge);
+  vec3 rgb = mix(vColor.rgb * shade, uBorderColor.rgb, isBorder * uBorderColor.a * sides);
+  fragColor = vec4(rgb + uDither * dither(gl_FragCoord.xy) / 255.0, edge);
 }`;
 
 export class TrailRenderer {
@@ -204,7 +197,9 @@ export class TrailRenderer {
     gl.bindVertexArray(null);
   }
 
-  draw(sim, camera, style, { shadow = false } = {}) {
+  // `dither`: off when drawing into the post-processing target, which dithers
+  // once, at the point it actually quantises to 8 bits.
+  draw(sim, camera, style, { shadow = false, dither = true } = {}) {
     const gl = this.gl;
     const { u, program: p } = this.prog;
     const dpr = style.pixelRatio;
@@ -232,19 +227,13 @@ export class TrailRenderer {
     gl.uniform3fv(u.uShadowColor, style.shadowColor);
     gl.uniform1i(u.uShadow, shadow ? 1 : 0);
     gl.uniform1f(u.uShading, style.shading);
+    gl.uniform1f(u.uDither, dither ? 1 : 0);
     gl.uniform2f(u.uBorderWidth,
       2.0 * style.borderWidth * dpr + 0.75,
       2.0 * style.borderWidth * dpr - 0.75);
     gl.uniform4f(u.uBorderColor, ...style.borderColor, style.borderOpacity);
 
-    // Joints first, segments over them: what remains of a disc is exactly the
-    // wedge a corner needs, plus the round caps at either end of a trail.
-    gl.uniform1i(u.uSegsPerTrail, sim.steps);
-    gl.uniform1i(u.uMode, 1);
-    gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, sim.particles * sim.steps);
-
     gl.uniform1i(u.uSegsPerTrail, sim.steps - 1);
-    gl.uniform1i(u.uMode, 0);
     gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, sim.particles * (sim.steps - 1));
 
     gl.bindVertexArray(null);
