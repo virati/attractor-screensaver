@@ -14,5 +14,5 @@ TimeoutStopSec=20
 # this unit's cgroup, so if the launcher is ever killed outright rather than
 # stopped, nothing else would reap the windows and they would pile up across
 # idle cycles. The leading - means a miss is not an error.
-ExecStopPost=-/usr/bin/pkill -x chrome -f /tmp/attractors-profile-
+ExecStopPost=-/usr/bin/pkill -f -- --user-data-dir=/tmp/attractors-profile-
 Restart=no

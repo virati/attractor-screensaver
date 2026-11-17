@@ -80,7 +80,18 @@ if command -v kwriteconfig6 >/dev/null && \
          "${KROHN:+$KROHN,}Attractors"
        echo "krohnkite: added Attractors to ignoreTitle" ;;
   esac
-  TILER_NOTE="krohnkite told to leave windows titled Attractors alone"
+  # The title alone loses a race: krohnkite reads it once, when the window
+  # appears, and the page sets it later. The class is there from the start;
+  # Chromium makes it chrome-127.0.0.1__index.html-<profile dir>, and krohnkite
+  # matches a [bracketed] entry as a case-insensitive substring.
+  KCLASS="$(kreadconfig6 --file kwinrc --group Script-krohnkite --key ignoreClass 2>/dev/null || true)"
+  case ",$KCLASS," in
+    *,"[index.html-attractors-]",*) ;;
+    *) kwriteconfig6 --file kwinrc --group Script-krohnkite --key ignoreClass \
+         "${KCLASS:+$KCLASS,}[index.html-attractors-]"
+       echo "krohnkite: added [index.html-attractors-] to ignoreClass" ;;
+  esac
+  TILER_NOTE="krohnkite told to leave the screensaver windows alone (title and class)"
 else
   TILER_NOTE="no krohnkite found; a tiling script would need telling to ignore these windows"
 fi

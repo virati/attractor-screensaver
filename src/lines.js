@@ -20,6 +20,7 @@ uniform int uSegsPerTrail, uMode, uShadow, uBlend;
 uniform vec2 uResolution; // device pixels
 uniform float uWidth, uFade, uTailFade, uColorMode, uFloorY;
 uniform vec3 uColor1, uColor2, uBackground, uShadowColor;
+uniform vec3 uTorus;      // (on, R, x centre), for systems with a phase clock in z
 
 out vec2 vLineCoord;
 out float vWidth, vShade, vBorderMix;
@@ -30,9 +31,19 @@ vec3 quasirandom (float n) {
   return fract(0.5 + n * vec3(1.0 / g, 1.0 / (g * g), 1.0 / (g * g * g))).zyx;
 }
 
+// A forced oscillator's state is (x, y, phase). Drawn as is, the phase would be
+// a coordinate that wraps from 2pi back to 0 and the trail would jump across the
+// box; drawn as the angle round a torus, the wrap is invisible and the picture is
+// the textbook one.
+vec3 display (vec4 s) {
+  if (uTorus.x < 0.5) return s.xyz;
+  float r = uTorus.y + s.x - uTorus.z;
+  return vec3(r * cos(s.z), s.y, r * sin(s.z));
+}
+
 vec4 clipOf (int particle, int slot) {
   int column = (uRing.z + 1 + slot) % uRing.x;
-  vec4 world = uTransform * vec4(texelFetch(uState, ivec2(column, particle), 0).xyz, 1.0);
+  vec4 world = uTransform * vec4(display(texelFetch(uState, ivec2(column, particle), 0)), 1.0);
   if (uShadow == 1) world.y = uFloorY;
   return uProjView * world;
 }
@@ -231,6 +242,8 @@ export class TrailRenderer {
     gl.uniform3fv(u.uBackground, style.background);
     gl.uniform3fv(u.uShadowColor, style.shadowColor);
     gl.uniform1i(u.uShadow, shadow ? 1 : 0);
+    const torus = style.torus;
+    gl.uniform3f(u.uTorus, torus ? 1 : 0, torus ? torus[0] : 0, torus ? torus[1] : 0);
     gl.uniform1f(u.uShading, style.shading);
     gl.uniform2f(u.uBorderWidth,
       2.0 * style.borderWidth * dpr + 0.75,
@@ -242,6 +255,14 @@ export class TrailRenderer {
     gl.uniform1i(u.uSegsPerTrail, sim.steps);
     gl.uniform1i(u.uMode, 1);
     gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, sim.particles * sim.steps);
+
+    // A map's successive iterates land anywhere on the attractor, so a line
+    // between them is noise. Its trail is drawn as the discs alone: a cloud of
+    // points, the older ones smaller and fading, which is how maps are drawn.
+    if (style.points) {
+      gl.bindVertexArray(null);
+      return;
+    }
 
     gl.uniform1i(u.uSegsPerTrail, sim.steps - 1);
     gl.uniform1i(u.uMode, 0);

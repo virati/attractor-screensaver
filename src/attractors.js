@@ -1,8 +1,12 @@
 // Generated from Ricky Reusser's "Strange Attractors on the GPU, Part 2"
 // https://observablehq.com/@rreusser/strange-attractors-on-the-gpu-part-2
 // Regenerate with: node tools/gen-attractors.mjs (see README).
+//
+// The dysts catalogue is appended after these, from src/dysts.js.
 
-export const ATTRACTORS = [
+import { DYSTS } from './dysts.js';
+
+const REUSSER = [
   {
     name: "Akgul-Pehlivan",
     deriv: `
@@ -550,5 +554,7 @@ export const ATTRACTORS = [
     refs: [{"title":"Irregularity: a fundamental property of the atmosphere","url":"https://onlinelibrary.wiley.com/doi/10.1111/j.1600-0870.1984.tb00230.x","deets":"Tellus A, 36, 98-110, 1984."},{"title":"1984 A 3D Model for Global Atmospheric Circulation","authors":["Christophe Letellier"],"url":"http://www.atomosyd.net/spip.php?article42"}],
   },
 ];
+
+export const ATTRACTORS = [...REUSSER, ...DYSTS];
 
 export const byName = name => ATTRACTORS.find(a => a.name === name);

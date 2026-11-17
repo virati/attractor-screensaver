@@ -190,8 +190,10 @@ launch() {  # launch <url> <class>
 # on the host, where this home is /var/home, so the path it is given has to be
 # the real one.
 #
-# The move and the fullscreen are separate steps: fullscreening a window that
-# has not landed on its output yet just fullscreens it where it already was.
+# The window is fullscreened before it is moved, and moved with
+# sendClientToScreen, which keeps it fullscreen on the new output. Setting
+# frameGeometry on a tiled window does nothing that lasts, so that is only the
+# fallback when sendClientToScreen is missing.
 PLACE_NAME="attractor-place"
 PLACE_SCRIPT="${XDG_DATA_HOME:-$HOME/.local/share}/${PLACE_NAME}.js"
 PLACE_SCRIPT="$(readlink -f "$PLACE_SCRIPT" 2>/dev/null || echo "$PLACE_SCRIPT")"
@@ -219,11 +221,20 @@ function place(w) {
   w.skipTaskbar = true;
   w.skipSwitcher = true;
   w.skipPager = true;
-  if (w.output && w.output.name === r.out) {
-    if (!w.fullScreen) w.fullScreen = true;
-    return;
+  // Fullscreen first. krohnkite decides whether to ignore a window when it
+  // appears, before the page has set its title, so it often tiles this one;
+  // a fullscreen window is one it leaves alone, and a move made while the
+  // window is still in a tile is pulled straight back into it.
+  if (!w.fullScreen) w.fullScreen = true;
+  if (w.output && w.output.name === r.out) return;
+  var outs = workspace.screens || [];
+  for (var i = 0; i < outs.length; i++) {
+    if (outs[i].name === r.out && workspace.sendClientToScreen) {
+      workspace.sendClientToScreen(w, outs[i]);
+      return;
+    }
   }
-  if (w.fullScreen) w.fullScreen = false;
+  w.fullScreen = false;
   w.frameGeometry = { x: r.x, y: r.y, width: r.w, height: r.h };
 }
 function sweep() {
