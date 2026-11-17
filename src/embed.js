@@ -50,7 +50,7 @@ export function mount({
       // Background notes, for a host page that wants to show them: `origin`,
       // `text` (2-3 paragraphs), `sources`, and `caveat` where the attribution
       // is shakier than the rest.
-      history: HISTORY[attractor.name] || null,
+      history: HISTORY[attractor.name] || attractor.history || null,
       palette: style.palette.name,
       index: dir.index,
       total: dir.playlist.length

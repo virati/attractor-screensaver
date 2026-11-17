@@ -25,10 +25,14 @@ export class Camera {
   }
 
   // Randomise the vantage point without ever ducking under the floor.
-  randomize(rng = Math.random) {
+  //
+  // `flat` is for a 2D map lying on the floor: the camera looks down on it from
+  // high up and turns it like a record, rather than circling at eye level where
+  // half of every orbit would see it edge-on.
+  randomize(rng = Math.random, { flat = false } = {}) {
     this.theta = rng() * Math.PI * 2;
-    this.phiCenter = 0.12 + rng() * 0.5;
-    this.phiSwing = 0.06 + rng() * 0.22;
+    this.phiCenter = flat ? 1.0 + rng() * 0.3 : 0.12 + rng() * 0.5;
+    this.phiSwing = flat ? 0.03 + rng() * 0.08 : 0.06 + rng() * 0.22;
     this.phiRate = 0.06 + rng() * 0.12;
     this.dTheta = (rng() < 0.5 ? -1 : 1) * (0.0012 + rng() * 0.0022);
     this.distance = 2.9 + rng() * 0.9;

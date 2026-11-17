@@ -1,10 +1,14 @@
 # Strange Attractor Screensaver
 
-Forty-three strange attractors, integrated and drawn entirely on the GPU, cycling
-one after another as a screensaver. A direct port of Ricky Reusser's
+A hundred and twenty-nine chaotic systems, integrated and drawn entirely on the
+GPU, cycling one after another as a screensaver. Forty-three are a direct port of
+Ricky Reusser's
 [*Strange Attractors on the GPU, Part 2*](https://observablehq.com/@rreusser/strange-attractors-on-the-gpu-part-2)
 — same systems, same parameters, same Runge–Kutta-on-a-texture trick — rebuilt as
 a dependency-free WebGL2 page with a director that keeps it interesting for hours.
+The other eighty-six come from William Gilpin's
+[dysts](https://github.com/williamgilpin/dysts) catalogue: 3D and 4D flows,
+forced oscillators, and 2D maps (see [Systems from dysts](#systems-from-dysts)).
 
 Each system holds the screen for five minutes, with a panel in the top right
 that says where it came from and what it was built to describe, creeping upward
@@ -254,6 +258,66 @@ While the notes were being written it turned out that `Four-wing` and
 `Wang-Sun` are the same system: identical equations, identical parameters,
 entered twice under different names. Both entries say so.
 
+## Systems from dysts
+
+[`src/dysts.js`](src/dysts.js) is generated from the dysts package by
+[`tools/gen-dysts.py`](tools/gen-dysts.py), and the playlist is Reusser's 43
+followed by these, shuffled together.
+
+```sh
+uv venv .venv && uv pip install --python .venv/bin/python dysts sympy
+.venv/bin/python tools/gen-dysts.py     # -> src/dysts.js
+node tools/check-dysts.mjs              # GLSL, run as JS, against sympy
+node tools/build-single.mjs
+```
+
+**Equations.** dysts writes each system as a Python right-hand side. The
+generator calls it with sympy symbols in place of numbers, with `np` swapped for
+a shim that answers in sympy, which gives the equations back as expressions. It
+checks those against dysts's own `rhs` at random points, prints them as GLSL —
+integer powers written out as products, since GLSL's `pow()` is undefined for a
+negative base — and `check-dysts.mjs` then evaluates the printed GLSL as
+JavaScript at recorded points to catch printer mistakes without a GPU.
+
+**Pacing.** Reusser chose each step size by eye. Measured against dysts's
+characteristic period for the 23 systems both sets carry, his steps come to a
+median of about 300 frames per period, so every dysts flow is paced at that. A
+float32 RK4 written to mirror the shader, seeded exactly as the shader seeds,
+then splits each frame into as many substeps as it takes for the settled shape
+to stop changing, and the settled cloud sets the view.
+
+**Kinds of system.**
+
+- *Flows in three or four dimensions.* The state texel has four channels, so a
+  4D (hyperchaotic) system fits as it is; the picture is its first three
+  coordinates.
+- *Forced oscillators* (Van der Pol, FitzHugh–Nagumo, Brusselator, stick-slip,
+  the fluid trampoline). These are 2D systems driven by a clock, carried as a
+  third coordinate that grows without bound. The shader keeps it to [0, 2π),
+  which is safe because the equations only see it through sines and cosines,
+  and the renderer draws it as the angle round a torus, so the wrap never
+  shows. Starting phases are spread round the clock so the ring fills at once.
+- *2D maps* (Hénon, Ikeda, De Jong, Tinkerbell, Chirikov's standard map and
+  others). Successive iterates of a map land anywhere on the attractor, so a
+  line between them is noise. Maps are drawn as point clouds instead, lying
+  flat on the floor under a camera that looks down and turns them like a
+  record. The standard map is periodic in both coordinates and is drawn on its
+  torus, every coordinate taken mod 2π.
+
+**What is left out.** 66 of dysts's 152 systems, each with its reason in the
+header of `src/dysts.js`: the 31 that Reusser's set already carries (his tuned
+versions are kept), 1D maps, delay equations, flows of five dimensions or more,
+systems whose unbounded coordinates are angles rather than a single forcing
+clock (the ABC flow, the double pendulum, the swinging Atwood machine), a
+handful whose right-hand sides are not plain arithmetic, and the few that do
+not survive the float32 mirror — the baker's map collapses to zero; Sprott L,
+Q, the Sprott jerk system, Turchin–Hanski and the Bogdanov map shed stragglers
+far outside the attractor; and Gumowski–Mira and the gingerbreadman fall onto
+periodic orbits from the shader's seeds.
+
+The history panel shows dysts's one-line description and citation for these;
+the longer notes exist only for Reusser's systems.
+
 ## Continuous mode
 
 `--continuous` stops treating the published parameter values as fixed and lets
@@ -287,7 +351,9 @@ a ring buffer.
 4th-order Runge–Kutta step through the attractor's derivative — compiled into the
 shader from the system's own GLSL source — and writes a one-pixel-wide column,
 which is then blitted back into the ring. Trajectories that escape are pulled
-back along their ray; ones that go non-finite are re-seeded.
+back along their ray; ones that go non-finite are re-seeded. A map is iterated
+instead, and the shader is compiled per system with its dimension, flow-or-map
+and wrapping baked in.
 
 **Drawing.** Every segment and every joint is an instanced quad whose corners the
 vertex shader places in *screen* space, so stroke width is in pixels regardless of
@@ -306,7 +372,8 @@ the camera into the next county.
 
 ```
 index.html                 page shell, overlay, styling
-src/attractors.js          the 43 systems (generated)
+src/attractors.js          Reusser's 43 systems (generated), merged with dysts
+src/dysts.js               86 systems from dysts (generated)
 src/simulation.js          state texture, RK4 integrator, spin-up
 src/lines.js               instanced trail renderer
 src/stage.js               the grid room and floor
@@ -319,6 +386,8 @@ src/main.js                loop, quality ladder, input
 bin/attractors             kiosk launcher
 bin/serve.py               static server with a /__quit endpoint
 tools/gen-attractors.mjs   regenerate src/attractors.js from the notebook
+tools/gen-dysts.py         regenerate src/dysts.js from the dysts package
+tools/check-dysts.mjs      check the generated GLSL against sympy
 tools/build-single.mjs     bundle to dist/attractors.html
 ```
 
@@ -342,3 +411,9 @@ seeding and the grid room are Ricky Reusser's, from
 [*Strange Attractors on the GPU, Part 2*](https://observablehq.com/@rreusser/strange-attractors-on-the-gpu-part-2)
 (and [Part 1](https://observablehq.com/d/ab6cd8bb0137889c), which explains the
 simulation properly). Each attractor's own paper is cited in the overlay.
+
+The other eighty-six systems, their equations, parameters, initial conditions,
+characteristic periods, descriptions and citations come from William Gilpin's
+[dysts](https://github.com/williamgilpin/dysts) (Gilpin, *Chaos as an
+interpretable benchmark for forecasting and data-driven modelling*, NeurIPS
+2021). The GLSL translation, pacing and views are generated here.

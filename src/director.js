@@ -20,13 +20,20 @@ const lerp = (a, b, t) => a + (b - a) * t;
 // ball about `target` holding all but the wildest 1.5% of it, and the height
 // its underside reaches. Stragglers are excluded so one escaping particle
 // cannot push the camera into the next county.
-function occupancy(positions, m, target, maxSamples = 24000) {
+//
+// `torus` repeats the renderer's display() for systems with a phase clock, so
+// the camera frames the ring that is drawn rather than the raw state.
+function occupancy(positions, m, target, torus = null, maxSamples = 24000) {
   const count = positions.length / 4;
   const stride = Math.max(1, Math.ceil(count / maxSamples));
   const radii = [];
   const heights = [];
   for (let i = 0; i < count; i += stride) {
-    const x = positions[i * 4], y = positions[i * 4 + 1], z = positions[i * 4 + 2];
+    let x = positions[i * 4], y = positions[i * 4 + 1], z = positions[i * 4 + 2];
+    if (torus) {
+      const r = torus[0] + x - torus[1];
+      [x, z] = [r * Math.cos(z), r * Math.sin(z)];
+    }
     if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
     const wx = m[0] * x + m[4] * y + m[8] * z + m[12];
     const wy = m[1] * x + m[5] * y + m[9] * z + m[13];
@@ -116,6 +123,7 @@ export class Director {
     const chosen = pool[Math.floor(r() * pool.length)];
     const palette = this.oled ? oledSafe(chosen) : chosen;
     const flip = r() < 0.5;
+    const points = !!attractor.flat;
 
     // `this.trail` pins whichever of width/fade/tailFade were asked for. The
     // random values are still drawn either way, so pinning one does not shift
@@ -140,6 +148,17 @@ export class Director {
       // 0 colours by the particle's seed radius, 1 by its index. The notebook
       // offers only these two ends; a value between them is ours.
       colorBy: r() < 0.7 ? 0 : 1,
+      // A map is a cloud of points lying flat. Its shadow would land exactly
+      // under it, and the side-of-stroke shading and border ink have no stroke
+      // to follow, so all three are off; the points are a few pixels across.
+      ...(points ? {
+        points: true,
+        shadow: false,
+        shading: 0.1,
+        borderOpacity: 0,
+        width: lerp(1.6, 3.4, r())
+      } : {}),
+      torus: attractor.torus || null,
       blend: this.blend,
       floorY: -0.5,
       roomHalf: 2,
@@ -153,12 +172,12 @@ export class Director {
     const style = this.dress(attractor);
     style.pixelRatio = this.scene.style ? this.scene.style.pixelRatio : 1;
     this.scene.style = style;
-    this.scene.camera.randomize(this.rng);
+    this.scene.camera.randomize(this.rng, { flat: !!attractor.flat });
     this.scene.sim.reset(attractor);
     this.scene.sim.spinUp();
 
     const { radius, bottom } = occupancy(
-      this.scene.sim.readPositions(), style.transform, this.scene.camera.target);
+      this.scene.sim.readPositions(), style.transform, this.scene.camera.target, style.torus);
     this.margin = lerp(1.22, 1.55, this.rng());
     this.scene.camera.frameRadius(radius, this.margin);
 
@@ -183,7 +202,7 @@ export class Director {
     if (!style || camera.drag) return;
 
     const { radius, bottom } = occupancy(
-      this.scene.sim.readPositions(128), style.transform, camera.target);
+      this.scene.sim.readPositions(128), style.transform, camera.target, style.torus);
     if (!(radius > 0)) return;
 
     const before = camera.distance;

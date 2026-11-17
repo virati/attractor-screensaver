@@ -48,7 +48,8 @@ export class HistoryPanel {
   }
 
   show(attractor) {
-    const entry = HISTORY[attractor.name];
+    // The dysts systems carry their catalogue description with them.
+    const entry = HISTORY[attractor.name] || attractor.history || null;
     this.root.classList.toggle('empty', !entry);
     this.originEl.textContent = entry ? entry.origin : '';
 
