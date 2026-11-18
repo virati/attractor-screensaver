@@ -158,6 +158,7 @@ export async function boot() {
   let rung = 3;
   let pendingRung = 3;
   let ceilingRung = LADDER.length - 1;
+  let chosen = null;
 
   const scene = new Scene(gl, {
     ...LADDER[rung],
@@ -196,7 +197,11 @@ export async function boot() {
     zoom: OPTS.zoom,
     blend: OPTS.blend,
     slice: sliceOf(OPTS.slice),
-    quality: () => { rung = pendingRung; return LADDER[rung]; },
+    // A count set with the arrow keys outranks the ladder for the session.
+    quality: () => {
+      rung = pendingRung;
+      return chosen === null ? LADDER[rung] : { ...LADDER[rung], particles: chosen };
+    },
     onChange: describe
   });
 
@@ -265,6 +270,7 @@ export async function boot() {
       accumulator = 0;
     }
 
+    scene.sim.fizzle(dt);
     scene.camera.update(dt);
     const veil = director.advance(dt);
     scene.render({ veil });
@@ -377,11 +383,21 @@ export async function boot() {
     document.body.classList.add('idle');
     armIdleExit(OPTS.arm * 1000, flagCurrent);
   } else {
+    // Up/down step the count in quarter-octaves, so a held key sweeps
+    // 1 → 4096 in about four seconds at the usual key-repeat rate.
+    const nudgeParticles = dir => {
+      const now = scene.sim.particles;
+      let next = Math.round(now * 2 ** (dir / 4));
+      if (next === now) next += dir;
+      chosen = Math.max(1, Math.min(scene.sim.capacity, next));
+      scene.sim.setCount(chosen);
+      toast(`${chosen} particles`, true);
+    };
     armControls(canvas, director, scene, history, flagCurrent, () => {
       const panel = el('jacobian');
       panel.classList.toggle('hidden');
       if (!panel.classList.contains('hidden')) updateJacobian();
-    });
+    }, nudgeParticles);
   }
 
   return { scene, director, history, drift };
@@ -421,26 +437,31 @@ function armIdleExit(holdOff = 700, onFlag = () => {}) {
   }
 }
 
-function armControls(canvas, director, scene, history, onFlag, toggleJacobian) {
+function armControls(canvas, director, scene, history, onFlag, toggleJacobian, nudgeParticles) {
+  // The key list shows for a while at start, then folds down to a dim "? keys"
+  // hint; `?` brings it back and it stays until `?` is pressed again.
   const help = el('help');
-  let helpTimer = null;
-  const flashHelp = () => {
-    help.classList.add('show');
-    clearTimeout(helpTimer);
-    helpTimer = setTimeout(() => help.classList.remove('show'), 3200);
+  const hint = el('help-hint');
+  const showHelp = on => {
+    help.classList.toggle('show', on);
+    hint.classList.toggle('show', !on);
   };
-  flashHelp();
+  let helpTimer = setTimeout(() => showHelp(false), 10000);
+  showHelp(true);
 
   window.addEventListener('keydown', e => {
     switch (e.key) {
       case 'ArrowRight': case 'n': director.jump(1); break;
       case 'ArrowLeft': case 'p': director.jump(-1); break;
+      case 'ArrowUp': nudgeParticles(1); e.preventDefault(); break;
+      case 'ArrowDown': nudgeParticles(-1); e.preventDefault(); break;
       case 'r': case 'R': director.reshuffleLook(); break;
       case ' ': director.paused = !director.paused; e.preventDefault(); break;
       case 'h': case 'H':
         el('hud').classList.toggle('hidden');
         el('meta').classList.toggle('hidden');
         el('history').classList.toggle('hidden');
+        hint.classList.toggle('hidden');
         break;
       case 'i': case 'I': el('history').classList.toggle('hidden'); break;
       case 'c': case 'C': if (!e.repeat) onFlag(); break;
@@ -449,7 +470,10 @@ function armControls(canvas, director, scene, history, onFlag, toggleJacobian) {
         if (document.fullscreenElement) document.exitFullscreen();
         else document.documentElement.requestFullscreen().catch(() => {});
         break;
-      case '?': flashHelp(); break;
+      case '?':
+        clearTimeout(helpTimer);
+        showHelp(!help.classList.contains('show'));
+        break;
       default: return;
     }
   });

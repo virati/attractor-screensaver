@@ -86,7 +86,7 @@
   #meta.hidden { opacity: 0 !important; }
   #meta b { color: var(--accent); font-weight: 600; }
 
-  #help {
+  #help, #help-hint {
     position: fixed;
     top: max(22px, env(safe-area-inset-top));
     left: max(24px, env(safe-area-inset-left));
@@ -97,6 +97,9 @@
     pointer-events: none;
   }
   #help.show { opacity: .5; }
+  #help-hint.show { opacity: .3; }
+  #help-hint.hidden { opacity: 0 !important; }
+  #help-hint kbd,
   #help kbd {
     font-family: ui-monospace, Menlo, monospace;
     border: 1px solid currentColor;
@@ -316,13 +319,16 @@
 
   <div id="help">
     <div><kbd>←</kbd> <kbd>→</kbd> previous / next attractor</div>
+    <div><kbd>↑</kbd> <kbd>↓</kbd> more / fewer particles</div>
     <div><kbd>R</kbd> new colours &amp; camera</div>
     <div><kbd>space</kbd> hold this one</div>
     <div><kbd>H</kbd> hide overlay · <kbd>F</kbd> fullscreen</div>
     <div><kbd>I</kbd> history panel · <kbd>scroll</kbd> over it to read</div>
     <div><kbd>C</kbd> flag this system · <kbd>J</kbd> Jacobian support</div>
     <div><kbd>drag</kbd> orbit · <kbd>scroll</kbd> zoom</div>
+    <div><kbd>?</kbd> show / hide these keys</div>
   </div>
+  <div id="help-hint"><kbd>?</kbd> keys</div>
 
   <div id="error"></div>
 
@@ -501,6 +507,7 @@ async function boot() {
   let rung = 3;
   let pendingRung = 3;
   let ceilingRung = LADDER.length - 1;
+  let chosen = null;
 
   const scene = new Scene(gl, {
     ...LADDER[rung],
@@ -539,7 +546,11 @@ async function boot() {
     zoom: OPTS.zoom,
     blend: OPTS.blend,
     slice: sliceOf(OPTS.slice),
-    quality: () => { rung = pendingRung; return LADDER[rung]; },
+    // A count set with the arrow keys outranks the ladder for the session.
+    quality: () => {
+      rung = pendingRung;
+      return chosen === null ? LADDER[rung] : { ...LADDER[rung], particles: chosen };
+    },
     onChange: describe
   });
 
@@ -608,6 +619,7 @@ async function boot() {
       accumulator = 0;
     }
 
+    scene.sim.fizzle(dt);
     scene.camera.update(dt);
     const veil = director.advance(dt);
     scene.render({ veil });
@@ -720,11 +732,21 @@ async function boot() {
     document.body.classList.add('idle');
     armIdleExit(OPTS.arm * 1000, flagCurrent);
   } else {
+    // Up/down step the count in quarter-octaves, so a held key sweeps
+    // 1 → 4096 in about four seconds at the usual key-repeat rate.
+    const nudgeParticles = dir => {
+      const now = scene.sim.particles;
+      let next = Math.round(now * 2 ** (dir / 4));
+      if (next === now) next += dir;
+      chosen = Math.max(1, Math.min(scene.sim.capacity, next));
+      scene.sim.setCount(chosen);
+      toast(`${chosen} particles`, true);
+    };
     armControls(canvas, director, scene, history, flagCurrent, () => {
       const panel = el('jacobian');
       panel.classList.toggle('hidden');
       if (!panel.classList.contains('hidden')) updateJacobian();
-    });
+    }, nudgeParticles);
   }
 
   return { scene, director, history, drift };
@@ -764,26 +786,31 @@ function armIdleExit(holdOff = 700, onFlag = () => {}) {
   }
 }
 
-function armControls(canvas, director, scene, history, onFlag, toggleJacobian) {
+function armControls(canvas, director, scene, history, onFlag, toggleJacobian, nudgeParticles) {
+  // The key list shows for a while at start, then folds down to a dim "? keys"
+  // hint; `?` brings it back and it stays until `?` is pressed again.
   const help = el('help');
-  let helpTimer = null;
-  const flashHelp = () => {
-    help.classList.add('show');
-    clearTimeout(helpTimer);
-    helpTimer = setTimeout(() => help.classList.remove('show'), 3200);
+  const hint = el('help-hint');
+  const showHelp = on => {
+    help.classList.toggle('show', on);
+    hint.classList.toggle('show', !on);
   };
-  flashHelp();
+  let helpTimer = setTimeout(() => showHelp(false), 10000);
+  showHelp(true);
 
   window.addEventListener('keydown', e => {
     switch (e.key) {
       case 'ArrowRight': case 'n': director.jump(1); break;
       case 'ArrowLeft': case 'p': director.jump(-1); break;
+      case 'ArrowUp': nudgeParticles(1); e.preventDefault(); break;
+      case 'ArrowDown': nudgeParticles(-1); e.preventDefault(); break;
       case 'r': case 'R': director.reshuffleLook(); break;
       case ' ': director.paused = !director.paused; e.preventDefault(); break;
       case 'h': case 'H':
         el('hud').classList.toggle('hidden');
         el('meta').classList.toggle('hidden');
         el('history').classList.toggle('hidden');
+        hint.classList.toggle('hidden');
         break;
       case 'i': case 'I': el('history').classList.toggle('hidden'); break;
       case 'c': case 'C': if (!e.repeat) onFlag(); break;
@@ -792,7 +819,10 @@ function armControls(canvas, director, scene, history, onFlag, toggleJacobian) {
         if (document.fullscreenElement) document.exitFullscreen();
         else document.documentElement.requestFullscreen().catch(() => {});
         break;
-      case '?': flashHelp(); break;
+      case '?':
+        clearTimeout(helpTimer);
+        showHelp(!help.classList.contains('show'));
+        break;
       default: return;
     }
   });
@@ -1069,6 +1099,11 @@ __def("simulation.js", function (__exports, __req) {
 //
 // Layout: texel (column, row) = position of particle `row` at trail slot
 // `column`. Columns are a ring buffer; `head` is the newest sample.
+//
+// The buffer always holds CAPACITY rows, all integrated, and `particles` only
+// says how many are shown. That is what lets the count change mid-shot: a row
+// switched on is already on the attractor with a full trail, and one switched
+// off fizzles out (see `life`) instead of the whole buffer being rebuilt.
 
 const { program, floatTarget, fullscreenTriangle, FULLSCREEN_VERT } = __req('glutil.js');
 
@@ -1171,17 +1206,41 @@ void main () {
 }`;
 }
 
+const CAPACITY = 4096;
+
+// Seconds a particle takes to fizzle in or out, and the most it waits before
+// starting, so a change of count is a scatter of dots going rather than a block.
+const FIZZLE = 0.45;
+const STAGGER = 0.7;
+
 class Simulation {
   constructor(gl, { particles, steps }) {
     this.gl = gl;
-    this.particles = particles;
+    this.capacity = CAPACITY;
+    this.particles = Math.max(1, Math.min(CAPACITY, particles));
     this.steps = steps;
     this.head = 0;
     this.t = 0;
     this.filled = 0;
 
-    this.state = floatTarget(gl, steps, particles);
-    this.tmp = floatTarget(gl, 1, particles);
+    this.state = floatTarget(gl, steps, this.capacity);
+    this.tmp = floatTarget(gl, 1, this.capacity);
+
+    // Per-particle visibility in [0, 1], read by the trail renderer. `delay`
+    // counts down before a particle starts to change; each gets its own.
+    this.life = new Float32Array(this.capacity);
+    this.delay = new Float32Array(this.capacity);
+    this.lifeTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, this.lifeTex);
+    gl.texStorage2D(gl.TEXTURE_2D, 1, gl.R32F, 1, this.capacity);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    this.snapLife();
+    // Rows the renderer has to visit: everything up to the last one not
+    // fully gone. Colours are spread over `colorCount`, which eases toward the
+    // count so index-coloured trails glide to their new colours.
+    this.drawRows = this.particles;
+    this.colorCount = this.particles;
     this.quad = fullscreenTriangle(gl);
     this.init = program(gl, FULLSCREEN_VERT, INIT_FRAG);
     this.copy = program(gl, FULLSCREEN_VERT, COPY_FRAG);
@@ -1207,6 +1266,7 @@ class Simulation {
     this.head = 0;
     this.t = 0;
     this.filled = 1;
+    this.snapLife();
 
     const origin = attractor.initOrigin || [0, 0, 0];
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.state.fbo);
@@ -1232,7 +1292,7 @@ class Simulation {
 
     // Integrate the head column into the scratch target.
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.tmp.fbo);
-    gl.viewport(0, 0, 1, this.particles);
+    gl.viewport(0, 0, 1, this.capacity);
     gl.disable(gl.DEPTH_TEST);
     gl.disable(gl.BLEND);
     gl.useProgram(prog.program);
@@ -1256,7 +1316,7 @@ class Simulation {
 
     // Blit the scratch column back into the ring buffer.
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.state.fbo);
-    gl.viewport(this.head, 0, 1, this.particles);
+    gl.viewport(this.head, 0, 1, this.capacity);
     gl.useProgram(this.copy.program);
     gl.bindTexture(gl.TEXTURE_2D, this.tmp.tex);
     gl.uniform1i(this.copy.u.uSrc, 0);
@@ -1289,14 +1349,60 @@ class Simulation {
     return out;
   }
 
+  // Between shots: the new count takes effect at the next reset, unfaded.
   resize({ particles, steps }) {
-    if (particles === this.particles && steps === this.steps) return;
+    this.particles = Math.max(1, Math.min(this.capacity, particles));
+    if (steps === this.steps) return;
     this.state.destroy();
     this.tmp.destroy();
-    this.particles = particles;
     this.steps = steps;
-    this.state = floatTarget(this.gl, steps, particles);
-    this.tmp = floatTarget(this.gl, 1, particles);
+    this.state = floatTarget(this.gl, steps, this.capacity);
+    this.tmp = floatTarget(this.gl, 1, this.capacity);
+  }
+
+  // Mid-shot: the rows past `n` fizzle out, or the ones up to it fizzle in.
+  setCount(n) {
+    n = Math.max(1, Math.min(this.capacity, Math.round(n)));
+    const lo = Math.min(n, this.particles), hi = Math.max(n, this.particles);
+    for (let i = lo; i < hi; i++) this.delay[i] = Math.random() * STAGGER;
+    this.particles = n;
+  }
+
+  snapLife() {
+    for (let i = 0; i < this.capacity; i++) {
+      this.life[i] = i < this.particles ? 1 : 0;
+      this.delay[i] = 0;
+    }
+    this.drawRows = this.particles;
+    this.colorCount = this.particles;
+    this.uploadLife();
+  }
+
+  // Walk every changing particle toward shown or gone. Called once a frame.
+  fizzle(dt) {
+    const n = this.particles;
+    let changed = false;
+    let rows = n;
+    for (let i = 0; i < this.capacity; i++) {
+      const goal = i < n ? 1 : 0;
+      if (this.life[i] === goal) continue;
+      if (this.delay[i] > 0) this.delay[i] -= dt;
+      else {
+        const step = dt / FIZZLE;
+        this.life[i] = goal ? Math.min(1, this.life[i] + step) : Math.max(0, this.life[i] - step);
+      }
+      if (this.life[i] > 0) rows = Math.max(rows, i + 1);
+      changed = true;
+    }
+    this.drawRows = rows;
+    this.colorCount += (n - this.colorCount) * Math.min(1, dt * 3);
+    if (changed) this.uploadLife();
+  }
+
+  uploadLife() {
+    const gl = this.gl;
+    gl.bindTexture(gl.TEXTURE_2D, this.lifeTex);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 1, this.capacity, gl.RED, gl.FLOAT, this.life);
   }
 
   destroy() {
@@ -1305,12 +1411,13 @@ class Simulation {
     this.quad.destroy();
     this.init.destroy();
     this.copy.destroy();
+    this.gl.deleteTexture(this.lifeTex);
     for (const p of this.programs.values()) p.destroy();
     this.programs.clear();
   }
 }
 
-Object.assign(__exports, { Simulation });
+Object.assign(__exports, { CAPACITY, Simulation });
 
 });
 
@@ -1339,8 +1446,9 @@ precision highp int;
 layout(location = 0) in vec2 corner;   // (0..1, 0..1)
 
 uniform mat4 uProjView, uTransform;
-uniform sampler2D uState;
+uniform sampler2D uState, uLife;
 uniform ivec4 uRing;      // steps, particles, head, filled
+uniform float uColorCount;
 uniform int uSegsPerTrail, uSub, uShadow, uBlend;
 uniform vec2 uResolution; // device pixels
 uniform float uWidth, uFade, uTailFade, uColorMode, uFloorY;
@@ -1409,7 +1517,12 @@ void main () {
   float u1 = float(sub + 1) / float(uSub);
   float paramA = (float(slot) + u0) / denom;
   float paramB = (float(slot) + u1) / denom;
-  float pn = (float(particle) + 0.5) / float(uRing.y);
+  float pn = (float(particle) + 0.5) / uColorCount;
+
+  // A particle fizzling out pulls its tail in toward the head and thins as it
+  // goes; fizzling in, the same backwards.
+  float life = texelFetch(uLife, ivec2(0, particle), 0).r;
+  if (life <= 0.0 || paramB < 1.0 - life) alive = false;
 
   // The neighbours either side shape the curve. Where there is none -- the
   // ends of the trail, or across a re-seed jump -- a phantom point is reflected
@@ -1444,8 +1557,9 @@ void main () {
   // (Joints used to be separate discs pushed just behind the segments, and
   // wherever another trail sat at nearly the same depth it won inside the
   // wedge, which with wide strokes read as teeth down every trail.)
-  float rA = 0.5 * widthAt(paramA);
-  float rB = 0.5 * widthAt(paramB);
+  float thin = sqrt(life);
+  float rA = 0.5 * widthAt(paramA) * thin;
+  float rB = 0.5 * widthAt(paramB) * thin;
   float r = max(rA, rB);
   vec2 d = pxB - pxA;
   float len = length(d);
@@ -1473,7 +1587,7 @@ void main () {
     // uColorMode weighs the particle's seed radius against its index. The
     // notebook offers the same two ends of this and nothing between; a value
     // in between is the one thing here it cannot do.
-    float coord = mix(quasirandom(float(particle) + 0.5).z, pn, uColorMode);
+    float coord = mix(quasirandom(float(particle) + 0.5).z, min(pn, 1.0), uColorMode);
     vec3 rgb = mix(uColor1, uColor2, coord);
     // The tail fade stays in the colour rather than moving into alpha. Carrying
     // it in alpha reads better in theory and is what the notebook does, but the
@@ -1570,9 +1684,14 @@ class TrailRenderer {
     gl.bindTexture(gl.TEXTURE_2D, sim.state.tex);
 
     gl.uniform1i(u.uState, 0);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, sim.lifeTex);
+    gl.uniform1i(u.uLife, 1);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.uniform1f(u.uColorCount, sim.colorCount);
     gl.uniformMatrix4fv(u.uProjView, false, camera.projView);
     gl.uniformMatrix4fv(u.uTransform, false, style.transform);
-    gl.uniform4i(u.uRing, sim.steps, sim.particles, sim.head, sim.filled);
+    gl.uniform4i(u.uRing, sim.steps, sim.capacity, sim.head, sim.filled);
     gl.uniform2f(u.uResolution, gl.drawingBufferWidth, gl.drawingBufferHeight);
     gl.uniform1f(u.uWidth, shadow ? width * 1.05 : width);
     gl.uniform1f(u.uFade, style.fade);
@@ -1595,7 +1714,7 @@ class TrailRenderer {
     const sub = Math.max(1, Math.round(style.subdivisions ?? 4));
     gl.uniform1i(u.uSegsPerTrail, sim.steps - 1);
     gl.uniform1i(u.uSub, sub);
-    gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, sim.particles * (sim.steps - 1) * sub);
+    gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, sim.drawRows * (sim.steps - 1) * sub);
 
     gl.bindVertexArray(null);
   }

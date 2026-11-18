@@ -22,8 +22,9 @@ precision highp int;
 layout(location = 0) in vec2 corner;   // (0..1, 0..1)
 
 uniform mat4 uProjView, uTransform;
-uniform sampler2D uState;
+uniform sampler2D uState, uLife;
 uniform ivec4 uRing;      // steps, particles, head, filled
+uniform float uColorCount;
 uniform int uSegsPerTrail, uSub, uShadow, uBlend;
 uniform vec2 uResolution; // device pixels
 uniform float uWidth, uFade, uTailFade, uColorMode, uFloorY;
@@ -92,7 +93,12 @@ void main () {
   float u1 = float(sub + 1) / float(uSub);
   float paramA = (float(slot) + u0) / denom;
   float paramB = (float(slot) + u1) / denom;
-  float pn = (float(particle) + 0.5) / float(uRing.y);
+  float pn = (float(particle) + 0.5) / uColorCount;
+
+  // A particle fizzling out pulls its tail in toward the head and thins as it
+  // goes; fizzling in, the same backwards.
+  float life = texelFetch(uLife, ivec2(0, particle), 0).r;
+  if (life <= 0.0 || paramB < 1.0 - life) alive = false;
 
   // The neighbours either side shape the curve. Where there is none -- the
   // ends of the trail, or across a re-seed jump -- a phantom point is reflected
@@ -127,8 +133,9 @@ void main () {
   // (Joints used to be separate discs pushed just behind the segments, and
   // wherever another trail sat at nearly the same depth it won inside the
   // wedge, which with wide strokes read as teeth down every trail.)
-  float rA = 0.5 * widthAt(paramA);
-  float rB = 0.5 * widthAt(paramB);
+  float thin = sqrt(life);
+  float rA = 0.5 * widthAt(paramA) * thin;
+  float rB = 0.5 * widthAt(paramB) * thin;
   float r = max(rA, rB);
   vec2 d = pxB - pxA;
   float len = length(d);
@@ -156,7 +163,7 @@ void main () {
     // uColorMode weighs the particle's seed radius against its index. The
     // notebook offers the same two ends of this and nothing between; a value
     // in between is the one thing here it cannot do.
-    float coord = mix(quasirandom(float(particle) + 0.5).z, pn, uColorMode);
+    float coord = mix(quasirandom(float(particle) + 0.5).z, min(pn, 1.0), uColorMode);
     vec3 rgb = mix(uColor1, uColor2, coord);
     // The tail fade stays in the colour rather than moving into alpha. Carrying
     // it in alpha reads better in theory and is what the notebook does, but the
@@ -253,9 +260,14 @@ export class TrailRenderer {
     gl.bindTexture(gl.TEXTURE_2D, sim.state.tex);
 
     gl.uniform1i(u.uState, 0);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, sim.lifeTex);
+    gl.uniform1i(u.uLife, 1);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.uniform1f(u.uColorCount, sim.colorCount);
     gl.uniformMatrix4fv(u.uProjView, false, camera.projView);
     gl.uniformMatrix4fv(u.uTransform, false, style.transform);
-    gl.uniform4i(u.uRing, sim.steps, sim.particles, sim.head, sim.filled);
+    gl.uniform4i(u.uRing, sim.steps, sim.capacity, sim.head, sim.filled);
     gl.uniform2f(u.uResolution, gl.drawingBufferWidth, gl.drawingBufferHeight);
     gl.uniform1f(u.uWidth, shadow ? width * 1.05 : width);
     gl.uniform1f(u.uFade, style.fade);
@@ -278,7 +290,7 @@ export class TrailRenderer {
     const sub = Math.max(1, Math.round(style.subdivisions ?? 4));
     gl.uniform1i(u.uSegsPerTrail, sim.steps - 1);
     gl.uniform1i(u.uSub, sub);
-    gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, sim.particles * (sim.steps - 1) * sub);
+    gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, sim.drawRows * (sim.steps - 1) * sub);
 
     gl.bindVertexArray(null);
   }

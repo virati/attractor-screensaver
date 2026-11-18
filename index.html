@@ -86,7 +86,7 @@
   #meta.hidden { opacity: 0 !important; }
   #meta b { color: var(--accent); font-weight: 600; }
 
-  #help {
+  #help, #help-hint {
     position: fixed;
     top: max(22px, env(safe-area-inset-top));
     left: max(24px, env(safe-area-inset-left));
@@ -97,6 +97,9 @@
     pointer-events: none;
   }
   #help.show { opacity: .5; }
+  #help-hint.show { opacity: .3; }
+  #help-hint.hidden { opacity: 0 !important; }
+  #help-hint kbd,
   #help kbd {
     font-family: ui-monospace, Menlo, monospace;
     border: 1px solid currentColor;
@@ -316,13 +319,16 @@
 
   <div id="help">
     <div><kbd>←</kbd> <kbd>→</kbd> previous / next attractor</div>
+    <div><kbd>↑</kbd> <kbd>↓</kbd> more / fewer particles</div>
     <div><kbd>R</kbd> new colours &amp; camera</div>
     <div><kbd>space</kbd> hold this one</div>
     <div><kbd>H</kbd> hide overlay · <kbd>F</kbd> fullscreen</div>
     <div><kbd>I</kbd> history panel · <kbd>scroll</kbd> over it to read</div>
     <div><kbd>C</kbd> flag this system · <kbd>J</kbd> Jacobian support</div>
     <div><kbd>drag</kbd> orbit · <kbd>scroll</kbd> zoom</div>
+    <div><kbd>?</kbd> show / hide these keys</div>
   </div>
+  <div id="help-hint"><kbd>?</kbd> keys</div>
 
   <div id="error"></div>
 

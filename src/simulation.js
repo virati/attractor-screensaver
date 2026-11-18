@@ -3,6 +3,11 @@
 //
 // Layout: texel (column, row) = position of particle `row` at trail slot
 // `column`. Columns are a ring buffer; `head` is the newest sample.
+//
+// The buffer always holds CAPACITY rows, all integrated, and `particles` only
+// says how many are shown. That is what lets the count change mid-shot: a row
+// switched on is already on the attractor with a full trail, and one switched
+// off fizzles out (see `life`) instead of the whole buffer being rebuilt.
 
 import { program, floatTarget, fullscreenTriangle, FULLSCREEN_VERT } from './glutil.js';
 
@@ -105,17 +110,41 @@ void main () {
 }`;
 }
 
+export const CAPACITY = 4096;
+
+// Seconds a particle takes to fizzle in or out, and the most it waits before
+// starting, so a change of count is a scatter of dots going rather than a block.
+const FIZZLE = 0.45;
+const STAGGER = 0.7;
+
 export class Simulation {
   constructor(gl, { particles, steps }) {
     this.gl = gl;
-    this.particles = particles;
+    this.capacity = CAPACITY;
+    this.particles = Math.max(1, Math.min(CAPACITY, particles));
     this.steps = steps;
     this.head = 0;
     this.t = 0;
     this.filled = 0;
 
-    this.state = floatTarget(gl, steps, particles);
-    this.tmp = floatTarget(gl, 1, particles);
+    this.state = floatTarget(gl, steps, this.capacity);
+    this.tmp = floatTarget(gl, 1, this.capacity);
+
+    // Per-particle visibility in [0, 1], read by the trail renderer. `delay`
+    // counts down before a particle starts to change; each gets its own.
+    this.life = new Float32Array(this.capacity);
+    this.delay = new Float32Array(this.capacity);
+    this.lifeTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, this.lifeTex);
+    gl.texStorage2D(gl.TEXTURE_2D, 1, gl.R32F, 1, this.capacity);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    this.snapLife();
+    // Rows the renderer has to visit: everything up to the last one not
+    // fully gone. Colours are spread over `colorCount`, which eases toward the
+    // count so index-coloured trails glide to their new colours.
+    this.drawRows = this.particles;
+    this.colorCount = this.particles;
     this.quad = fullscreenTriangle(gl);
     this.init = program(gl, FULLSCREEN_VERT, INIT_FRAG);
     this.copy = program(gl, FULLSCREEN_VERT, COPY_FRAG);
@@ -141,6 +170,7 @@ export class Simulation {
     this.head = 0;
     this.t = 0;
     this.filled = 1;
+    this.snapLife();
 
     const origin = attractor.initOrigin || [0, 0, 0];
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.state.fbo);
@@ -166,7 +196,7 @@ export class Simulation {
 
     // Integrate the head column into the scratch target.
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.tmp.fbo);
-    gl.viewport(0, 0, 1, this.particles);
+    gl.viewport(0, 0, 1, this.capacity);
     gl.disable(gl.DEPTH_TEST);
     gl.disable(gl.BLEND);
     gl.useProgram(prog.program);
@@ -190,7 +220,7 @@ export class Simulation {
 
     // Blit the scratch column back into the ring buffer.
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.state.fbo);
-    gl.viewport(this.head, 0, 1, this.particles);
+    gl.viewport(this.head, 0, 1, this.capacity);
     gl.useProgram(this.copy.program);
     gl.bindTexture(gl.TEXTURE_2D, this.tmp.tex);
     gl.uniform1i(this.copy.u.uSrc, 0);
@@ -223,14 +253,60 @@ export class Simulation {
     return out;
   }
 
+  // Between shots: the new count takes effect at the next reset, unfaded.
   resize({ particles, steps }) {
-    if (particles === this.particles && steps === this.steps) return;
+    this.particles = Math.max(1, Math.min(this.capacity, particles));
+    if (steps === this.steps) return;
     this.state.destroy();
     this.tmp.destroy();
-    this.particles = particles;
     this.steps = steps;
-    this.state = floatTarget(this.gl, steps, particles);
-    this.tmp = floatTarget(this.gl, 1, particles);
+    this.state = floatTarget(this.gl, steps, this.capacity);
+    this.tmp = floatTarget(this.gl, 1, this.capacity);
+  }
+
+  // Mid-shot: the rows past `n` fizzle out, or the ones up to it fizzle in.
+  setCount(n) {
+    n = Math.max(1, Math.min(this.capacity, Math.round(n)));
+    const lo = Math.min(n, this.particles), hi = Math.max(n, this.particles);
+    for (let i = lo; i < hi; i++) this.delay[i] = Math.random() * STAGGER;
+    this.particles = n;
+  }
+
+  snapLife() {
+    for (let i = 0; i < this.capacity; i++) {
+      this.life[i] = i < this.particles ? 1 : 0;
+      this.delay[i] = 0;
+    }
+    this.drawRows = this.particles;
+    this.colorCount = this.particles;
+    this.uploadLife();
+  }
+
+  // Walk every changing particle toward shown or gone. Called once a frame.
+  fizzle(dt) {
+    const n = this.particles;
+    let changed = false;
+    let rows = n;
+    for (let i = 0; i < this.capacity; i++) {
+      const goal = i < n ? 1 : 0;
+      if (this.life[i] === goal) continue;
+      if (this.delay[i] > 0) this.delay[i] -= dt;
+      else {
+        const step = dt / FIZZLE;
+        this.life[i] = goal ? Math.min(1, this.life[i] + step) : Math.max(0, this.life[i] - step);
+      }
+      if (this.life[i] > 0) rows = Math.max(rows, i + 1);
+      changed = true;
+    }
+    this.drawRows = rows;
+    this.colorCount += (n - this.colorCount) * Math.min(1, dt * 3);
+    if (changed) this.uploadLife();
+  }
+
+  uploadLife() {
+    const gl = this.gl;
+    gl.bindTexture(gl.TEXTURE_2D, this.lifeTex);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 1, this.capacity, gl.RED, gl.FLOAT, this.life);
   }
 
   destroy() {
@@ -239,6 +315,7 @@ export class Simulation {
     this.quad.destroy();
     this.init.destroy();
     this.copy.destroy();
+    this.gl.deleteTexture(this.lifeTex);
     for (const p of this.programs.values()) p.destroy();
     this.programs.clear();
   }

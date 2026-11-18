@@ -152,6 +152,7 @@ except <kbd>C</kbd>, which flags the system and leaves it running.
 | | |
 |---|---|
 | <kbd>←</kbd> <kbd>→</kbd> | previous / next attractor |
+| <kbd>↑</kbd> <kbd>↓</kbd> | more / fewer particles, ×1.19 per press; the change fizzles in/out without restarting |
 | <kbd>R</kbd> | reroll the palette, camera and line style |
 | <kbd>space</kbd> | hold on this one |
 | <kbd>H</kbd> | hide the overlay |
@@ -159,6 +160,7 @@ except <kbd>C</kbd>, which flags the system and leaves it running.
 | <kbd>C</kbd> | flag this system for later analysis (works in `--idle` too) |
 | <kbd>J</kbd> | show / hide the Jacobian support grid |
 | <kbd>F</kbd> | fullscreen |
+| <kbd>?</kbd> | show / hide the key list (shown for 10 s at start) |
 | drag / scroll | orbit / zoom |
 | scroll over the panel | read at your own pace; auto-scroll resumes after 12s |
 
