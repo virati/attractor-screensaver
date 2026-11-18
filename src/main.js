@@ -5,6 +5,7 @@ import { Scene } from './scene.js';
 import { Director } from './director.js';
 import { Drift } from './drift.js';
 import { HistoryPanel } from './history-panel.js';
+import { JacobianPanel, jacobianSupport } from './jacobian.js';
 import { equations, parameterLine, parameterValues, reference } from './format.js';
 
 const params = new URLSearchParams(location.search);
@@ -63,6 +64,8 @@ const OPTS = {
   maxPixelRatio: num('dpr', 2),
   hud: params.get('hud') !== '0',
   history: params.get('history') !== '0',
+  // Off by default: a glass 3×3 grid of which ∂fᵢ/∂xⱼ are nonzero. J toggles it.
+  jacobian: flag('jacobian'),
   // On by default: true-black grounds, and dark palettes only unless a light
   // one was asked for outright. `oled=0` restores the designed backgrounds.
   oled: params.has('oled') ? params.get('oled') !== '0' : LOOK.oled ?? true,
@@ -111,6 +114,8 @@ if (params.has('width')) TRAIL.width = clamp(num('width', 7), 0.5, 40);
 if (params.has('taper')) TRAIL.fade = clamp(num('taper', 0.35), 0, 2);
 if (params.has('tailFade')) TRAIL.tailFade = clamp(num('tailFade', 0.25), 0, 1);
 if (params.has('colorBy')) TRAIL.colorBy = clamp(num('colorBy', 1), 0, 1);
+// Curve pieces drawn per integration step; 1 draws straight chords as before.
+if (params.has('smooth')) TRAIL.subdivisions = Math.round(clamp(num('smooth', 4), 1, 16));
 
 const el = id => document.getElementById(id);
 
@@ -169,6 +174,14 @@ export async function boot() {
   const history = OPTS.history ? new HistoryPanel(el('history')) : null;
   if (!history) el('history').classList.add('hidden');
 
+  const jacobian = new JacobianPanel(el('jacobian'));
+  if (!OPTS.jacobian) el('jacobian').classList.add('hidden');
+  let support = null;
+  const updateJacobian = (positions = scene.sim.readPositions(64)) => {
+    support = jacobianSupport(director.current, scene.sim.params, positions);
+    jacobian.show(support);
+  };
+
   const director = new Director(scene, {
     duration: OPTS.duration,
     fadeTime: OPTS.fadeTime,
@@ -200,6 +213,10 @@ export async function boot() {
       `${String(dir.index + 1).padStart(2, '0')} / ${dir.playlist.length}`;
     el('palette').textContent = style.palette.name;
     if (history) history.show(attractor);
+    // describe() runs from inside the Director's constructor too, before
+    // `director` is assigned, so the attractor is passed in rather than looked up.
+    support = jacobianSupport(attractor, scene.sim.params, scene.sim.readPositions(64));
+    jacobian.show(support);
   }
 
   // --- sizing --------------------------------------------------------------
@@ -225,6 +242,7 @@ export async function boot() {
   let smoothDt = 1 / 60;
   let sinceCheck = 0;
   let sinceReadout = 0;
+  let sinceJacobian = 0;
   let running = true;
 
   function frame(now) {
@@ -262,6 +280,9 @@ export async function boot() {
         sinceReadout = 0;
         el('params').textContent = parameterValues(scene.sim.params);
       }
+      // A coefficient drifting through zero switches a coupling off.
+      sinceJacobian += dt;
+      if (sinceJacobian > 2) { sinceJacobian = 0; updateJacobian(); }
     }
 
     const hud = OPTS.hud ? Math.max(0, 1 - veil * 1.6) : 0;
@@ -291,19 +312,86 @@ export async function boot() {
     el('error').classList.add('show');
   });
 
+  // --- flagging -------------------------------------------------------------
+  // `c` writes everything needed to come back to this system later — the
+  // field as GLSL, the parameters as they are right now (drifted ones
+  // included), the Jacobian support and how it was being shown — to the flag
+  // file via the launcher's server. Opened as a bare file there is no server,
+  // so the record is kept in localStorage instead and the toast says so.
+  const flagToast = el('flagged');
+  let toastTimer = null;
+  const toast = (text, ok) => {
+    flagToast.textContent = text;
+    flagToast.classList.toggle('bad', !ok);
+    flagToast.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => flagToast.classList.remove('show'), 3200);
+  };
+  async function flagCurrent() {
+    const a = director.current;
+    const record = {
+      flaggedAt: new Date().toISOString(),
+      name: a.name,
+      set: SETS_OF(a),
+      f: a.f, g: a.g,
+      deriv: a.deriv.trim().split('\n').map(l => l.trim()).join('\n'),
+      params: { ...scene.sim.params },
+      publishedParams: { ...(a.params || {}) },
+      jacobianSupport: support,
+      dt: a.dt,
+      initScale: a.initScale,
+      initOrigin: a.initOrigin,
+      view: a.view,
+      lie: a.lie,
+      respawn: a.respawn,
+      simTime: scene.sim.t,
+      secondsOnScreen: director.held,
+      palette: scene.style.palette.name,
+      continuous: !!drift,
+      seed: OPTS.seed,
+      query: location.search
+    };
+    try {
+      const res = await fetch('/__flag', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(record)
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || res.status);
+      toast(`⚑ ${a.name} flagged (${body.count}) → ${body.path}`, true);
+    } catch (err) {
+      try {
+        const kept = JSON.parse(localStorage.getItem('attractors.flagged') || '[]');
+        kept.push(record);
+        localStorage.setItem('attractors.flagged', JSON.stringify(kept));
+        toast(`⚑ ${a.name}: no server, kept in browser storage only (${err.message})`, false);
+      } catch (e) {
+        toast(`⚑ ${a.name} NOT saved: ${err.message}`, false);
+      }
+    }
+  }
+
   // --- input ---------------------------------------------------------------
   if (OPTS.idle) {
     document.body.classList.add('idle');
-    armIdleExit(OPTS.arm * 1000);
+    armIdleExit(OPTS.arm * 1000, flagCurrent);
   } else {
-    armControls(canvas, director, scene, history);
+    armControls(canvas, director, scene, history, flagCurrent, () => {
+      const panel = el('jacobian');
+      panel.classList.toggle('hidden');
+      if (!panel.classList.contains('hidden')) updateJacobian();
+    });
   }
 
   return { scene, director, history, drift };
 }
 
-// Screensaver mode: the first real sign of life dismisses the window.
-function armIdleExit(holdOff = 700) {
+const SETS_OF = a => (a.f ? 'lie' : 'classic');
+
+// Screensaver mode: the first real sign of life dismisses the window — except
+// `c`, which flags the system on screen and leaves the screensaver running.
+function armIdleExit(holdOff = 700, onFlag = () => {}) {
   const armedAt = performance.now();
   let origin = null;
   let quitting = false;
@@ -321,12 +409,19 @@ function armIdleExit(holdOff = 700) {
     if (Math.hypot(e.clientX - origin[0], e.clientY - origin[1]) > 12) quit();
   };
   window.addEventListener('mousemove', moved, { passive: true });
-  for (const type of ['keydown', 'mousedown', 'wheel', 'touchstart', 'pointerdown']) {
+  window.addEventListener('keydown', e => {
+    if (e.key === 'c' || e.key === 'C') {
+      if (!e.repeat && performance.now() - armedAt >= holdOff) onFlag();
+      return;
+    }
+    quit();
+  });
+  for (const type of ['mousedown', 'wheel', 'touchstart', 'pointerdown']) {
     window.addEventListener(type, quit, { passive: true });
   }
 }
 
-function armControls(canvas, director, scene, history) {
+function armControls(canvas, director, scene, history, onFlag, toggleJacobian) {
   const help = el('help');
   let helpTimer = null;
   const flashHelp = () => {
@@ -348,6 +443,8 @@ function armControls(canvas, director, scene, history) {
         el('history').classList.toggle('hidden');
         break;
       case 'i': case 'I': el('history').classList.toggle('hidden'); break;
+      case 'c': case 'C': if (!e.repeat) onFlag(); break;
+      case 'j': case 'J': toggleJacobian(); break;
       case 'f': case 'F':
         if (document.fullscreenElement) document.exitFullscreen();
         else document.documentElement.requestFullscreen().catch(() => {});

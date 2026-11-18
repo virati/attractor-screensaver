@@ -4,6 +4,14 @@
 // turns into alpha, resolved by alpha-to-coverage against a multisampled target
 // -- that keeps the pass opaque, so trails depth-test against each other
 // without any sorting.
+//
+// Each step between samples is drawn as a curve, not a chord: a centripetal
+// Catmull-Rom spline through the sample and its neighbours, cut into
+// `subdivisions` capsules. Where the flow is fast the samples sit far apart,
+// and joined by straight chords the outer loops of a system read as polygons.
+// The centripetal knots are what keep it honest: they cannot overshoot into a
+// loop or cusp that the trajectory never made, which uniform knots do on a
+// tight turn between long steps.
 
 import { program } from './glutil.js';
 
@@ -16,7 +24,7 @@ layout(location = 0) in vec2 corner;   // (0..1, 0..1)
 uniform mat4 uProjView, uTransform;
 uniform sampler2D uState;
 uniform ivec4 uRing;      // steps, particles, head, filled
-uniform int uSegsPerTrail, uShadow, uBlend;
+uniform int uSegsPerTrail, uSub, uShadow, uBlend;
 uniform vec2 uResolution; // device pixels
 uniform float uWidth, uFade, uTailFade, uColorMode, uFloorY;
 uniform vec3 uColor1, uColor2, uBackground, uShadowColor;
@@ -30,11 +38,29 @@ vec3 quasirandom (float n) {
   return fract(0.5 + n * vec3(1.0 / g, 1.0 / (g * g), 1.0 / (g * g * g))).zyx;
 }
 
-vec4 clipOf (int particle, int slot) {
+vec3 worldOf (int particle, int slot) {
   int column = (uRing.z + 1 + slot) % uRing.x;
-  vec4 world = uTransform * vec4(texelFetch(uState, ivec2(column, particle), 0).xyz, 1.0);
+  return (uTransform * vec4(texelFetch(uState, ivec2(column, particle), 0).xyz, 1.0)).xyz;
+}
+
+vec4 clipOf (vec3 world) {
   if (uShadow == 1) world.y = uFloorY;
-  return uProjView * world;
+  return uProjView * vec4(world, 1.0);
+}
+
+// Barry-Goldman evaluation of the centripetal Catmull-Rom segment from p1 to
+// p2, at u in [0, 1]. Knot spacing is the square root of chord length.
+vec3 catmullRom (vec3 p0, vec3 p1, vec3 p2, vec3 p3, float u) {
+  float t1 = max(sqrt(distance(p0, p1)), 1e-4);
+  float t2 = t1 + max(sqrt(distance(p1, p2)), 1e-4);
+  float t3 = t2 + max(sqrt(distance(p2, p3)), 1e-4);
+  float t = mix(t1, t2, u);
+  vec3 a1 = mix(p0, p1, t / t1);
+  vec3 a2 = mix(p1, p2, (t - t1) / (t2 - t1));
+  vec3 a3 = mix(p2, p3, (t - t2) / (t3 - t2));
+  vec3 b1 = mix(a1, a2, t / t2);
+  vec3 b2 = mix(a2, a3, (t - t1) / (t3 - t1));
+  return mix(b1, b2, (t - t1) / (t2 - t1));
 }
 
 // The simulation writes w = 0 into a sample it had to re-seed rather than
@@ -50,20 +76,36 @@ float widthAt (float param) {
 
 void main () {
   int steps = uRing.x;
-  int particle = gl_InstanceID / uSegsPerTrail;
-  int slot = gl_InstanceID - particle * uSegsPerTrail;
+  int perTrail = uSegsPerTrail * uSub;
+  int particle = gl_InstanceID / perTrail;
+  int piece = gl_InstanceID - particle * perTrail;
+  int slot = piece / uSub;
+  int sub = piece - slot * uSub;
 
   // Slots older than what has actually been simulated are collapsed away.
-  bool alive = slot >= steps - uRing.w;
+  int oldest = steps - uRing.w;
+  bool alive = slot >= oldest;
   if (reseeded(particle, slot + 1)) alive = false;
 
   float denom = float(steps - 1);
-  float paramA = float(slot) / denom;
-  float paramB = float(slot + 1) / denom;
+  float u0 = float(sub) / float(uSub);
+  float u1 = float(sub + 1) / float(uSub);
+  float paramA = (float(slot) + u0) / denom;
+  float paramB = (float(slot) + u1) / denom;
   float pn = (float(particle) + 0.5) / float(uRing.y);
 
-  vec4 clipA = clipOf(particle, slot);
-  vec4 clipB = clipOf(particle, slot + 1);
+  // The neighbours either side shape the curve. Where there is none -- the
+  // ends of the trail, or across a re-seed jump -- a phantom point is reflected
+  // through the end, which carries the chord's own direction on.
+  vec3 p1 = worldOf(particle, slot);
+  vec3 p2 = worldOf(particle, slot + 1);
+  bool hasPrev = slot - 1 >= oldest && !reseeded(particle, slot);
+  bool hasNext = slot + 2 < steps && !reseeded(particle, slot + 2);
+  vec3 p0 = hasPrev ? worldOf(particle, slot - 1) : 2.0 * p1 - p2;
+  vec3 p3 = hasNext ? worldOf(particle, slot + 2) : 2.0 * p2 - p1;
+
+  vec4 clipA = clipOf(uSub == 1 ? p1 : catmullRom(p0, p1, p2, p3, u0));
+  vec4 clipB = clipOf(uSub == 1 ? p2 : catmullRom(p0, p1, p2, p3, u1));
 
   if (!alive || clipA.w <= 0.0 || clipB.w <= 0.0) {
     gl_Position = vec4(0.0, 0.0, 2.0, 1.0);  // behind the far plane: clipped
@@ -233,8 +275,10 @@ export class TrailRenderer {
       2.0 * style.borderWidth * dpr - 0.75);
     gl.uniform4f(u.uBorderColor, ...style.borderColor, style.borderOpacity);
 
+    const sub = Math.max(1, Math.round(style.subdivisions ?? 4));
     gl.uniform1i(u.uSegsPerTrail, sim.steps - 1);
-    gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, sim.particles * (sim.steps - 1));
+    gl.uniform1i(u.uSub, sub);
+    gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, sim.particles * (sim.steps - 1) * sub);
 
     gl.bindVertexArray(null);
   }

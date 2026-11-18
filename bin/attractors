@@ -9,6 +9,8 @@
 #   attractors --windowed      # normal browser window instead of fullscreen kiosk
 #   attractors --lie           # cycle the Lie brackets built by tools/lie_pairs.py
 #   attractors --bracket Lorenz Rossler   # build (if needed) and hold one dysts pair's bracket
+#   attractors --jacobian      # show which Jacobian entries are nonzero (J toggles it)
+#   attractors --flagged       # list systems flagged with C (python3 tools/flagged.py)
 #
 # Anything else you pass is appended to the page's query string, e.g.
 #   attractors --idle duration=30 theme=dark particles=2048
@@ -30,10 +32,12 @@ while [[ $# -gt 0 ]]; do
     --windowed|-w)     KIOSK=0 ;;
     --all-displays|-a) ALL_DISPLAYS=1 ;;
     --lie|-l)          QUERY+=("set=lie") ;;
+    --jacobian|-j)     QUERY+=("jacobian=1") ;;
+    --flagged)         exec "${PYTHON:-python3}" "$ROOT/tools/flagged.py" ;;
     --bracket|-L)
       [[ $# -ge 2 ]] || { echo "--bracket needs two dysts system names" >&2; exit 2; }
       BRACKET=("$1" "$2"); shift 2 ;;
-    --help|-h)         sed -n '2,14p' "$0" | sed 's/^# \?//'; exit 0 ;;
+    --help|-h)         sed -n '2,16p' "$0" | sed 's/^# \?//'; exit 0 ;;
     -*)                echo "unknown option: $arg" >&2; exit 2 ;;
     *)                 QUERY+=("$arg") ;;
   esac

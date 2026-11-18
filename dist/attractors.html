@@ -172,6 +172,93 @@
     #history { display: none; }
   }
 
+  /* Jacobian support: a pane of frosted glass with one well per ∂fᵢ/∂xⱼ. A
+     live entry is a lit red bead; a zero stays clear glass. */
+  #jacobian {
+    position: fixed;
+    right: max(24px, env(safe-area-inset-right));
+    bottom: calc(max(22px, env(safe-area-inset-bottom)) + 2.1rem);
+    display: grid;
+    grid-template-columns: 1.4rem repeat(3, 2.6rem);
+    grid-template-rows: auto 1.1rem repeat(3, 2.6rem);
+    gap: .42rem;
+    align-items: center;
+    justify-items: center;
+    padding: .9rem 1rem 1rem .7rem;
+    border-radius: 18px;
+    background:
+      linear-gradient(145deg, rgba(255,255,255,.16), rgba(255,255,255,.03) 55%, rgba(255,255,255,.07));
+    -webkit-backdrop-filter: blur(16px) saturate(1.5);
+    backdrop-filter: blur(16px) saturate(1.5);
+    border: 1px solid rgba(255,255,255,.18);
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,.28),
+      inset 0 -1px 0 rgba(0,0,0,.18),
+      0 18px 40px -12px rgba(0,0,0,.55);
+    opacity: var(--hud);
+    transition: opacity 240ms linear;
+    pointer-events: none;
+    font-family: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  }
+  #jacobian.hidden { opacity: 0 !important; }
+  body.paper #jacobian {
+    background: linear-gradient(145deg, rgba(255,255,255,.55), rgba(255,255,255,.22) 55%, rgba(255,255,255,.35));
+    border-color: rgba(0,0,0,.1);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.8), 0 18px 40px -16px rgba(0,0,0,.25);
+  }
+  #jacobian .jac-title {
+    grid-column: 1 / -1;
+    justify-self: start;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-size: .6rem;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    opacity: .55;
+  }
+  #jacobian .jac-label { font-size: .72rem; opacity: .6; }
+  #jacobian .jac-cell {
+    width: 100%; height: 100%;
+    border-radius: 10px;
+    background: linear-gradient(160deg, rgba(255,255,255,.07), rgba(255,255,255,.015));
+    border: 1px solid rgba(255,255,255,.13);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.12);
+    transition: background 420ms ease, box-shadow 420ms ease, border-color 420ms ease;
+  }
+  body.paper #jacobian .jac-cell { border-color: rgba(0,0,0,.1); }
+  #jacobian .jac-cell.on {
+    background:
+      radial-gradient(120% 90% at 30% 22%, rgba(255,190,190,.85), rgba(255,60,70,.0) 46%),
+      linear-gradient(160deg, rgba(255,70,80,.92), rgba(170,10,30,.88));
+    border-color: rgba(255,140,150,.7);
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,.45),
+      inset 0 -6px 12px rgba(90,0,15,.45),
+      0 0 18px rgba(255,40,60,.45);
+  }
+
+  /* The flag toast: centred at the top, readable over any palette. */
+  #flagged {
+    position: fixed;
+    top: max(22px, env(safe-area-inset-top));
+    left: 50%;
+    transform: translate(-50%, -8px);
+    max-width: calc(100vw - 48px);
+    padding: .5rem .95rem;
+    border-radius: 999px;
+    font-size: .76rem;
+    color: #fff;
+    background: rgba(20,24,32,.55);
+    -webkit-backdrop-filter: blur(14px);
+    backdrop-filter: blur(14px);
+    border: 1px solid rgba(255,255,255,.2);
+    overflow-wrap: anywhere;
+    opacity: 0;
+    transition: opacity 200ms linear, transform 200ms ease;
+    pointer-events: none;
+  }
+  #flagged.show { opacity: 1; transform: translate(-50%, 0); }
+  #flagged.bad { border-color: rgba(255,120,120,.75); }
+
   #error {
     position: fixed; inset: 0;
     display: none;
@@ -209,12 +296,31 @@
     </div>
   </aside>
 
+  <div id="jacobian">
+    <div class="jac-title">Jacobian support</div>
+    <div></div><div class="jac-label">x</div><div class="jac-label">y</div><div class="jac-label">z</div>
+    <div class="jac-label">ẋ</div>
+    <div class="jac-cell"></div>
+    <div class="jac-cell"></div>
+    <div class="jac-cell"></div>
+    <div class="jac-label">ẏ</div>
+    <div class="jac-cell"></div>
+    <div class="jac-cell"></div>
+    <div class="jac-cell"></div>
+    <div class="jac-label">ż</div>
+    <div class="jac-cell"></div>
+    <div class="jac-cell"></div>
+    <div class="jac-cell"></div>
+  </div>
+  <div id="flagged"></div>
+
   <div id="help">
     <div><kbd>←</kbd> <kbd>→</kbd> previous / next attractor</div>
     <div><kbd>R</kbd> new colours &amp; camera</div>
     <div><kbd>space</kbd> hold this one</div>
     <div><kbd>H</kbd> hide overlay · <kbd>F</kbd> fullscreen</div>
     <div><kbd>I</kbd> history panel · <kbd>scroll</kbd> over it to read</div>
+    <div><kbd>C</kbd> flag this system · <kbd>J</kbd> Jacobian support</div>
     <div><kbd>drag</kbd> orbit · <kbd>scroll</kbd> zoom</div>
   </div>
 
@@ -242,6 +348,7 @@ const { Scene } = __req('scene.js');
 const { Director } = __req('director.js');
 const { Drift } = __req('drift.js');
 const { HistoryPanel } = __req('history-panel.js');
+const { JacobianPanel, jacobianSupport } = __req('jacobian.js');
 const { equations, parameterLine, parameterValues, reference } = __req('format.js');
 
 const params = new URLSearchParams(location.search);
@@ -300,6 +407,8 @@ const OPTS = {
   maxPixelRatio: num('dpr', 2),
   hud: params.get('hud') !== '0',
   history: params.get('history') !== '0',
+  // Off by default: a glass 3×3 grid of which ∂fᵢ/∂xⱼ are nonzero. J toggles it.
+  jacobian: flag('jacobian'),
   // On by default: true-black grounds, and dark palettes only unless a light
   // one was asked for outright. `oled=0` restores the designed backgrounds.
   oled: params.has('oled') ? params.get('oled') !== '0' : LOOK.oled ?? true,
@@ -348,6 +457,8 @@ if (params.has('width')) TRAIL.width = clamp(num('width', 7), 0.5, 40);
 if (params.has('taper')) TRAIL.fade = clamp(num('taper', 0.35), 0, 2);
 if (params.has('tailFade')) TRAIL.tailFade = clamp(num('tailFade', 0.25), 0, 1);
 if (params.has('colorBy')) TRAIL.colorBy = clamp(num('colorBy', 1), 0, 1);
+// Curve pieces drawn per integration step; 1 draws straight chords as before.
+if (params.has('smooth')) TRAIL.subdivisions = Math.round(clamp(num('smooth', 4), 1, 16));
 
 const el = id => document.getElementById(id);
 
@@ -406,6 +517,14 @@ async function boot() {
   const history = OPTS.history ? new HistoryPanel(el('history')) : null;
   if (!history) el('history').classList.add('hidden');
 
+  const jacobian = new JacobianPanel(el('jacobian'));
+  if (!OPTS.jacobian) el('jacobian').classList.add('hidden');
+  let support = null;
+  const updateJacobian = (positions = scene.sim.readPositions(64)) => {
+    support = jacobianSupport(director.current, scene.sim.params, positions);
+    jacobian.show(support);
+  };
+
   const director = new Director(scene, {
     duration: OPTS.duration,
     fadeTime: OPTS.fadeTime,
@@ -437,6 +556,10 @@ async function boot() {
       `${String(dir.index + 1).padStart(2, '0')} / ${dir.playlist.length}`;
     el('palette').textContent = style.palette.name;
     if (history) history.show(attractor);
+    // describe() runs from inside the Director's constructor too, before
+    // `director` is assigned, so the attractor is passed in rather than looked up.
+    support = jacobianSupport(attractor, scene.sim.params, scene.sim.readPositions(64));
+    jacobian.show(support);
   }
 
   // --- sizing --------------------------------------------------------------
@@ -462,6 +585,7 @@ async function boot() {
   let smoothDt = 1 / 60;
   let sinceCheck = 0;
   let sinceReadout = 0;
+  let sinceJacobian = 0;
   let running = true;
 
   function frame(now) {
@@ -499,6 +623,9 @@ async function boot() {
         sinceReadout = 0;
         el('params').textContent = parameterValues(scene.sim.params);
       }
+      // A coefficient drifting through zero switches a coupling off.
+      sinceJacobian += dt;
+      if (sinceJacobian > 2) { sinceJacobian = 0; updateJacobian(); }
     }
 
     const hud = OPTS.hud ? Math.max(0, 1 - veil * 1.6) : 0;
@@ -528,19 +655,86 @@ async function boot() {
     el('error').classList.add('show');
   });
 
+  // --- flagging -------------------------------------------------------------
+  // `c` writes everything needed to come back to this system later — the
+  // field as GLSL, the parameters as they are right now (drifted ones
+  // included), the Jacobian support and how it was being shown — to the flag
+  // file via the launcher's server. Opened as a bare file there is no server,
+  // so the record is kept in localStorage instead and the toast says so.
+  const flagToast = el('flagged');
+  let toastTimer = null;
+  const toast = (text, ok) => {
+    flagToast.textContent = text;
+    flagToast.classList.toggle('bad', !ok);
+    flagToast.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => flagToast.classList.remove('show'), 3200);
+  };
+  async function flagCurrent() {
+    const a = director.current;
+    const record = {
+      flaggedAt: new Date().toISOString(),
+      name: a.name,
+      set: SETS_OF(a),
+      f: a.f, g: a.g,
+      deriv: a.deriv.trim().split('\n').map(l => l.trim()).join('\n'),
+      params: { ...scene.sim.params },
+      publishedParams: { ...(a.params || {}) },
+      jacobianSupport: support,
+      dt: a.dt,
+      initScale: a.initScale,
+      initOrigin: a.initOrigin,
+      view: a.view,
+      lie: a.lie,
+      respawn: a.respawn,
+      simTime: scene.sim.t,
+      secondsOnScreen: director.held,
+      palette: scene.style.palette.name,
+      continuous: !!drift,
+      seed: OPTS.seed,
+      query: location.search
+    };
+    try {
+      const res = await fetch('/__flag', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(record)
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || res.status);
+      toast(`⚑ ${a.name} flagged (${body.count}) → ${body.path}`, true);
+    } catch (err) {
+      try {
+        const kept = JSON.parse(localStorage.getItem('attractors.flagged') || '[]');
+        kept.push(record);
+        localStorage.setItem('attractors.flagged', JSON.stringify(kept));
+        toast(`⚑ ${a.name}: no server, kept in browser storage only (${err.message})`, false);
+      } catch (e) {
+        toast(`⚑ ${a.name} NOT saved: ${err.message}`, false);
+      }
+    }
+  }
+
   // --- input ---------------------------------------------------------------
   if (OPTS.idle) {
     document.body.classList.add('idle');
-    armIdleExit(OPTS.arm * 1000);
+    armIdleExit(OPTS.arm * 1000, flagCurrent);
   } else {
-    armControls(canvas, director, scene, history);
+    armControls(canvas, director, scene, history, flagCurrent, () => {
+      const panel = el('jacobian');
+      panel.classList.toggle('hidden');
+      if (!panel.classList.contains('hidden')) updateJacobian();
+    });
   }
 
   return { scene, director, history, drift };
 }
 
-// Screensaver mode: the first real sign of life dismisses the window.
-function armIdleExit(holdOff = 700) {
+const SETS_OF = a => (a.f ? 'lie' : 'classic');
+
+// Screensaver mode: the first real sign of life dismisses the window — except
+// `c`, which flags the system on screen and leaves the screensaver running.
+function armIdleExit(holdOff = 700, onFlag = () => {}) {
   const armedAt = performance.now();
   let origin = null;
   let quitting = false;
@@ -558,12 +752,19 @@ function armIdleExit(holdOff = 700) {
     if (Math.hypot(e.clientX - origin[0], e.clientY - origin[1]) > 12) quit();
   };
   window.addEventListener('mousemove', moved, { passive: true });
-  for (const type of ['keydown', 'mousedown', 'wheel', 'touchstart', 'pointerdown']) {
+  window.addEventListener('keydown', e => {
+    if (e.key === 'c' || e.key === 'C') {
+      if (!e.repeat && performance.now() - armedAt >= holdOff) onFlag();
+      return;
+    }
+    quit();
+  });
+  for (const type of ['mousedown', 'wheel', 'touchstart', 'pointerdown']) {
     window.addEventListener(type, quit, { passive: true });
   }
 }
 
-function armControls(canvas, director, scene, history) {
+function armControls(canvas, director, scene, history, onFlag, toggleJacobian) {
   const help = el('help');
   let helpTimer = null;
   const flashHelp = () => {
@@ -585,6 +786,8 @@ function armControls(canvas, director, scene, history) {
         el('history').classList.toggle('hidden');
         break;
       case 'i': case 'I': el('history').classList.toggle('hidden'); break;
+      case 'c': case 'C': if (!e.repeat) onFlag(); break;
+      case 'j': case 'J': toggleJacobian(); break;
       case 'f': case 'F':
         if (document.fullscreenElement) document.exitFullscreen();
         else document.documentElement.requestFullscreen().catch(() => {});
@@ -1118,6 +1321,14 @@ __def("lines.js", function (__exports, __req) {
 // turns into alpha, resolved by alpha-to-coverage against a multisampled target
 // -- that keeps the pass opaque, so trails depth-test against each other
 // without any sorting.
+//
+// Each step between samples is drawn as a curve, not a chord: a centripetal
+// Catmull-Rom spline through the sample and its neighbours, cut into
+// `subdivisions` capsules. Where the flow is fast the samples sit far apart,
+// and joined by straight chords the outer loops of a system read as polygons.
+// The centripetal knots are what keep it honest: they cannot overshoot into a
+// loop or cusp that the trajectory never made, which uniform knots do on a
+// tight turn between long steps.
 
 const { program } = __req('glutil.js');
 
@@ -1130,7 +1341,7 @@ layout(location = 0) in vec2 corner;   // (0..1, 0..1)
 uniform mat4 uProjView, uTransform;
 uniform sampler2D uState;
 uniform ivec4 uRing;      // steps, particles, head, filled
-uniform int uSegsPerTrail, uShadow, uBlend;
+uniform int uSegsPerTrail, uSub, uShadow, uBlend;
 uniform vec2 uResolution; // device pixels
 uniform float uWidth, uFade, uTailFade, uColorMode, uFloorY;
 uniform vec3 uColor1, uColor2, uBackground, uShadowColor;
@@ -1144,11 +1355,29 @@ vec3 quasirandom (float n) {
   return fract(0.5 + n * vec3(1.0 / g, 1.0 / (g * g), 1.0 / (g * g * g))).zyx;
 }
 
-vec4 clipOf (int particle, int slot) {
+vec3 worldOf (int particle, int slot) {
   int column = (uRing.z + 1 + slot) % uRing.x;
-  vec4 world = uTransform * vec4(texelFetch(uState, ivec2(column, particle), 0).xyz, 1.0);
+  return (uTransform * vec4(texelFetch(uState, ivec2(column, particle), 0).xyz, 1.0)).xyz;
+}
+
+vec4 clipOf (vec3 world) {
   if (uShadow == 1) world.y = uFloorY;
-  return uProjView * world;
+  return uProjView * vec4(world, 1.0);
+}
+
+// Barry-Goldman evaluation of the centripetal Catmull-Rom segment from p1 to
+// p2, at u in [0, 1]. Knot spacing is the square root of chord length.
+vec3 catmullRom (vec3 p0, vec3 p1, vec3 p2, vec3 p3, float u) {
+  float t1 = max(sqrt(distance(p0, p1)), 1e-4);
+  float t2 = t1 + max(sqrt(distance(p1, p2)), 1e-4);
+  float t3 = t2 + max(sqrt(distance(p2, p3)), 1e-4);
+  float t = mix(t1, t2, u);
+  vec3 a1 = mix(p0, p1, t / t1);
+  vec3 a2 = mix(p1, p2, (t - t1) / (t2 - t1));
+  vec3 a3 = mix(p2, p3, (t - t2) / (t3 - t2));
+  vec3 b1 = mix(a1, a2, t / t2);
+  vec3 b2 = mix(a2, a3, (t - t1) / (t3 - t1));
+  return mix(b1, b2, (t - t1) / (t2 - t1));
 }
 
 // The simulation writes w = 0 into a sample it had to re-seed rather than
@@ -1164,20 +1393,36 @@ float widthAt (float param) {
 
 void main () {
   int steps = uRing.x;
-  int particle = gl_InstanceID / uSegsPerTrail;
-  int slot = gl_InstanceID - particle * uSegsPerTrail;
+  int perTrail = uSegsPerTrail * uSub;
+  int particle = gl_InstanceID / perTrail;
+  int piece = gl_InstanceID - particle * perTrail;
+  int slot = piece / uSub;
+  int sub = piece - slot * uSub;
 
   // Slots older than what has actually been simulated are collapsed away.
-  bool alive = slot >= steps - uRing.w;
+  int oldest = steps - uRing.w;
+  bool alive = slot >= oldest;
   if (reseeded(particle, slot + 1)) alive = false;
 
   float denom = float(steps - 1);
-  float paramA = float(slot) / denom;
-  float paramB = float(slot + 1) / denom;
+  float u0 = float(sub) / float(uSub);
+  float u1 = float(sub + 1) / float(uSub);
+  float paramA = (float(slot) + u0) / denom;
+  float paramB = (float(slot) + u1) / denom;
   float pn = (float(particle) + 0.5) / float(uRing.y);
 
-  vec4 clipA = clipOf(particle, slot);
-  vec4 clipB = clipOf(particle, slot + 1);
+  // The neighbours either side shape the curve. Where there is none -- the
+  // ends of the trail, or across a re-seed jump -- a phantom point is reflected
+  // through the end, which carries the chord's own direction on.
+  vec3 p1 = worldOf(particle, slot);
+  vec3 p2 = worldOf(particle, slot + 1);
+  bool hasPrev = slot - 1 >= oldest && !reseeded(particle, slot);
+  bool hasNext = slot + 2 < steps && !reseeded(particle, slot + 2);
+  vec3 p0 = hasPrev ? worldOf(particle, slot - 1) : 2.0 * p1 - p2;
+  vec3 p3 = hasNext ? worldOf(particle, slot + 2) : 2.0 * p2 - p1;
+
+  vec4 clipA = clipOf(uSub == 1 ? p1 : catmullRom(p0, p1, p2, p3, u0));
+  vec4 clipB = clipOf(uSub == 1 ? p2 : catmullRom(p0, p1, p2, p3, u1));
 
   if (!alive || clipA.w <= 0.0 || clipB.w <= 0.0) {
     gl_Position = vec4(0.0, 0.0, 2.0, 1.0);  // behind the far plane: clipped
@@ -1347,8 +1592,10 @@ class TrailRenderer {
       2.0 * style.borderWidth * dpr - 0.75);
     gl.uniform4f(u.uBorderColor, ...style.borderColor, style.borderOpacity);
 
+    const sub = Math.max(1, Math.round(style.subdivisions ?? 4));
     gl.uniform1i(u.uSegsPerTrail, sim.steps - 1);
-    gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, sim.particles * (sim.steps - 1));
+    gl.uniform1i(u.uSub, sub);
+    gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, sim.particles * (sim.steps - 1) * sub);
 
     gl.bindVertexArray(null);
   }
@@ -3696,6 +3943,87 @@ const HISTORY = {
 };
 
 Object.assign(__exports, { HISTORY });
+
+});
+
+__def("jacobian.js", function (__exports, __req) {
+// Which entries of the 3×3 Jacobian ∂fᵢ/∂xⱼ are not identically zero: the
+// system's coupling graph. An entry counts as live when its variable appears in
+// the component *and* its partial is nonzero somewhere on the attractor, at the
+// parameters currently in play — so a term whose coefficient is zero (or has
+// drifted through zero) reads as absent, the way it would on paper.
+
+const { splitComponents } = __req('format.js');
+
+const VARS = ['x', 'y', 'z'];
+const MATH = 'const { sin, cos, tan, exp, log, abs, sign, sqrt, pow, tanh, atan, floor, min, max } = Math;';
+
+const compiled = new Map();
+
+// The derivative source is GLSL, but every function it uses has a Math twin of
+// the same name and every literal is a valid JS number, so it runs as written.
+function compile(attractor) {
+  if (compiled.has(attractor.name)) return compiled.get(attractor.name);
+  const names = Object.keys(attractor.params || {});
+  const parts = splitComponents(attractor.deriv).slice(0, 3);
+  let fn = null;
+  try {
+    fn = new Function('x', 'y', 'z', 't', 'p',
+      `${MATH} const { ${names.join(', ')} } = p; return [${parts.join(', ')}];`);
+  } catch (e) {
+    fn = null;
+  }
+  const mentions = parts.map(src => VARS.map(v => new RegExp(`\\b${v}\\b`).test(src)));
+  const entry = { fn, mentions };
+  compiled.set(attractor.name, entry);
+  return entry;
+}
+
+// positions: the RGBA32F trail buffer from sim.readPositions(). Returns a 3×3
+// array of booleans, rows = components (ẋ ẏ ż), columns = x y z.
+function jacobianSupport(attractor, params, positions, maxSamples = 400) {
+  const { fn, mentions } = compile(attractor);
+  if (!fn || !positions || !positions.length) return mentions;
+
+  const count = positions.length / 4;
+  const stride = Math.max(1, Math.floor(count / maxSamples));
+  const peak = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+  let scale = 0;
+  for (let k = 0; k < count; k += stride) {
+    const p = [positions[k * 4], positions[k * 4 + 1], positions[k * 4 + 2]];
+    if (!p.every(Number.isFinite)) continue;
+    for (let j = 0; j < 3; j++) {
+      const h = 1e-4 * (1 + Math.abs(p[j]));
+      const a = p.slice(), b = p.slice();
+      a[j] += h; b[j] -= h;
+      const fa = fn(a[0], a[1], a[2], 0, params);
+      const fb = fn(b[0], b[1], b[2], 0, params);
+      for (let i = 0; i < 3; i++) {
+        const d = Math.abs((fa[i] - fb[i]) / (2 * h));
+        if (!Number.isFinite(d)) continue;
+        if (d > peak[i][j]) peak[i][j] = d;
+        if (d > scale) scale = d;
+      }
+    }
+  }
+  // Central differences in float64 leave residue around 1e-9 of the largest
+  // entry; anything that small is a zero that did not cancel cleanly.
+  const floor = Math.max(1e-12, scale * 1e-7);
+  return mentions.map((row, i) => row.map((m, j) => m && peak[i][j] > floor));
+}
+
+class JacobianPanel {
+  constructor(root) {
+    this.root = root;
+    this.cells = [...root.querySelectorAll('.jac-cell')];
+  }
+
+  show(support) {
+    support.flat().forEach((on, k) => this.cells[k].classList.toggle('on', !!on));
+  }
+}
+
+Object.assign(__exports, { jacobianSupport, JacobianPanel });
 
 });
 

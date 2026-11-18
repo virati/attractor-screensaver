@@ -146,7 +146,8 @@ uv venv .venv && uv pip install --python .venv/bin/python -r tools/requirements-
 
 ## Controls
 
-Interactive mode only — in `--idle` mode any input dismisses the screensaver.
+Interactive mode only — in `--idle` mode any input dismisses the screensaver,
+except <kbd>C</kbd>, which flags the system and leaves it running.
 
 | | |
 |---|---|
@@ -155,9 +156,37 @@ Interactive mode only — in `--idle` mode any input dismisses the screensaver.
 | <kbd>space</kbd> | hold on this one |
 | <kbd>H</kbd> | hide the overlay |
 | <kbd>I</kbd> | hide the history panel on its own |
+| <kbd>C</kbd> | flag this system for later analysis (works in `--idle` too) |
+| <kbd>J</kbd> | show / hide the Jacobian support grid |
 | <kbd>F</kbd> | fullscreen |
 | drag / scroll | orbit / zoom |
 | scroll over the panel | read at your own pace; auto-scroll resumes after 12s |
+
+## Flagging systems
+
+Press <kbd>C</kbd> on anything worth a closer look. A line goes to
+`~/.local/share/attractors/flagged.jsonl` (`ATTRACTORS_FLAGS` overrides) with
+the field as GLSL, the parameters at that moment (drifted ones included) and the
+published ones, the Jacobian support, `dt`, the seed box and view, and for a Lie
+bracket the two dysts systems. A toast at the top says where it went.
+
+```sh
+bin/attractors --flagged          # one line per system, with its Jacobian support
+python3 tools/flagged.py --json   # latest record per system
+```
+
+or `pandas.read_json(path, lines=True)`. The flag file is written by the
+launcher's server; `dist/attractors.html` opened as a bare file has none, so
+there the record goes to the browser's localStorage and the toast says so.
+
+## Jacobian support
+
+`--jacobian` (or <kbd>J</kbd>) shows a frosted 3×3 grid, rows ẋ ẏ ż and columns
+x y z: red where ∂fᵢ/∂xⱼ is nonzero, clear where it is zero. An entry is live
+when its variable appears in the component and its partial, by central
+differences at 64 trajectories of the trail buffer and the current parameters,
+is nonzero somewhere on the attractor — so a term with a zero coefficient reads
+as absent. In `--continuous` mode it is rechecked every two seconds.
 
 ## Options
 
@@ -188,6 +217,7 @@ bin/attractors --idle duration=30 theme=dark particles=2048
 | `dpr` | `2` | device-pixel-ratio ceiling |
 | `hud` | `1` | `0` hides the name and equations |
 | `history` | `1` | `0` hides the history panel |
+| `jacobian` | `0` | `1` shows the Jacobian support grid (`--jacobian`) |
 | `continuous` | — | drift the parameters instead of holding them fixed |
 | `sweep` | `0.12` | drift amplitude, as a fraction of each published value |
 | `sweepPeriod` | `55` | seconds for the base drift cycle |
@@ -197,6 +227,7 @@ bin/attractors --idle duration=30 theme=dark particles=2048
 | `width` | random 4–11 | stroke thickness, in pixels |
 | `taper` | random 0.1–0.6 | how sharply the stroke narrows toward the tail |
 | `tailFade` | random 0.08–0.42 | how quickly the tail fades out |
+| `smooth` | `4` | curve pieces per integration step (1–16); `1` draws straight chords |
 
 ## OLED power
 
@@ -267,6 +298,16 @@ there is no large smooth gradient for it to fix, and at 5x zoom it is not
 visible. It will matter on a sparse, long-tailed setting.
 
 ## The trail
+
+Between two samples the trail is a curve, not a straight line: a centripetal
+Catmull-Rom spline through the two samples and their neighbours, evaluated in
+the vertex shader and cut into `smooth` pieces. Where the flow is fast the
+samples are far apart, and drawn as chords the outer loops came out as
+polygons. Centripetal knots (spacing by the square root of chord length) are
+the variant that cannot overshoot into a loop or cusp the trajectory never
+made. Ends of a trail and re-seed jumps get a reflected phantom neighbour, so
+the curve just carries the chord on there. It costs nothing in the simulation;
+the draw has `smooth` times as many instances.
 
 `steps` is the trail length: how many past positions of each particle are drawn
 behind it. Each trail is one trajectory, so cutting `steps` and raising
@@ -371,13 +412,15 @@ src/director.js            playlist, palettes, transitions
 src/palettes.js            15 colour schemes
 src/scene.js               frame composition
 src/format.js              GLSL derivatives -> readable equations
+src/jacobian.js            which Jacobian entries are nonzero, and the grid
 src/main.js                loop, quality ladder, input
 bin/attractors             kiosk launcher
-bin/serve.py               static server with a /__quit endpoint
+bin/serve.py               static server with /__quit and /__flag endpoints
 tools/gen-attractors.mjs   regenerate src/attractors.js from the notebook
 tools/build-single.mjs     bundle to dist/attractors.html
 tools/lie_pairs.py         build Lie brackets of dysts pairs with autoLie
 tools/lie-pairs.json       the brackets kept so far (source of the JS)
+tools/flagged.py           list the systems flagged with C
 third_party/autoLie        submodule: Lie derivatives and brackets
 ```
 

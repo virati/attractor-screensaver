@@ -172,6 +172,93 @@
     #history { display: none; }
   }
 
+  /* Jacobian support: a pane of frosted glass with one well per ∂fᵢ/∂xⱼ. A
+     live entry is a lit red bead; a zero stays clear glass. */
+  #jacobian {
+    position: fixed;
+    right: max(24px, env(safe-area-inset-right));
+    bottom: calc(max(22px, env(safe-area-inset-bottom)) + 2.1rem);
+    display: grid;
+    grid-template-columns: 1.4rem repeat(3, 2.6rem);
+    grid-template-rows: auto 1.1rem repeat(3, 2.6rem);
+    gap: .42rem;
+    align-items: center;
+    justify-items: center;
+    padding: .9rem 1rem 1rem .7rem;
+    border-radius: 18px;
+    background:
+      linear-gradient(145deg, rgba(255,255,255,.16), rgba(255,255,255,.03) 55%, rgba(255,255,255,.07));
+    -webkit-backdrop-filter: blur(16px) saturate(1.5);
+    backdrop-filter: blur(16px) saturate(1.5);
+    border: 1px solid rgba(255,255,255,.18);
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,.28),
+      inset 0 -1px 0 rgba(0,0,0,.18),
+      0 18px 40px -12px rgba(0,0,0,.55);
+    opacity: var(--hud);
+    transition: opacity 240ms linear;
+    pointer-events: none;
+    font-family: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  }
+  #jacobian.hidden { opacity: 0 !important; }
+  body.paper #jacobian {
+    background: linear-gradient(145deg, rgba(255,255,255,.55), rgba(255,255,255,.22) 55%, rgba(255,255,255,.35));
+    border-color: rgba(0,0,0,.1);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.8), 0 18px 40px -16px rgba(0,0,0,.25);
+  }
+  #jacobian .jac-title {
+    grid-column: 1 / -1;
+    justify-self: start;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-size: .6rem;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    opacity: .55;
+  }
+  #jacobian .jac-label { font-size: .72rem; opacity: .6; }
+  #jacobian .jac-cell {
+    width: 100%; height: 100%;
+    border-radius: 10px;
+    background: linear-gradient(160deg, rgba(255,255,255,.07), rgba(255,255,255,.015));
+    border: 1px solid rgba(255,255,255,.13);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.12);
+    transition: background 420ms ease, box-shadow 420ms ease, border-color 420ms ease;
+  }
+  body.paper #jacobian .jac-cell { border-color: rgba(0,0,0,.1); }
+  #jacobian .jac-cell.on {
+    background:
+      radial-gradient(120% 90% at 30% 22%, rgba(255,190,190,.85), rgba(255,60,70,.0) 46%),
+      linear-gradient(160deg, rgba(255,70,80,.92), rgba(170,10,30,.88));
+    border-color: rgba(255,140,150,.7);
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,.45),
+      inset 0 -6px 12px rgba(90,0,15,.45),
+      0 0 18px rgba(255,40,60,.45);
+  }
+
+  /* The flag toast: centred at the top, readable over any palette. */
+  #flagged {
+    position: fixed;
+    top: max(22px, env(safe-area-inset-top));
+    left: 50%;
+    transform: translate(-50%, -8px);
+    max-width: calc(100vw - 48px);
+    padding: .5rem .95rem;
+    border-radius: 999px;
+    font-size: .76rem;
+    color: #fff;
+    background: rgba(20,24,32,.55);
+    -webkit-backdrop-filter: blur(14px);
+    backdrop-filter: blur(14px);
+    border: 1px solid rgba(255,255,255,.2);
+    overflow-wrap: anywhere;
+    opacity: 0;
+    transition: opacity 200ms linear, transform 200ms ease;
+    pointer-events: none;
+  }
+  #flagged.show { opacity: 1; transform: translate(-50%, 0); }
+  #flagged.bad { border-color: rgba(255,120,120,.75); }
+
   #error {
     position: fixed; inset: 0;
     display: none;
@@ -209,12 +296,31 @@
     </div>
   </aside>
 
+  <div id="jacobian">
+    <div class="jac-title">Jacobian support</div>
+    <div></div><div class="jac-label">x</div><div class="jac-label">y</div><div class="jac-label">z</div>
+    <div class="jac-label">ẋ</div>
+    <div class="jac-cell"></div>
+    <div class="jac-cell"></div>
+    <div class="jac-cell"></div>
+    <div class="jac-label">ẏ</div>
+    <div class="jac-cell"></div>
+    <div class="jac-cell"></div>
+    <div class="jac-cell"></div>
+    <div class="jac-label">ż</div>
+    <div class="jac-cell"></div>
+    <div class="jac-cell"></div>
+    <div class="jac-cell"></div>
+  </div>
+  <div id="flagged"></div>
+
   <div id="help">
     <div><kbd>←</kbd> <kbd>→</kbd> previous / next attractor</div>
     <div><kbd>R</kbd> new colours &amp; camera</div>
     <div><kbd>space</kbd> hold this one</div>
     <div><kbd>H</kbd> hide overlay · <kbd>F</kbd> fullscreen</div>
     <div><kbd>I</kbd> history panel · <kbd>scroll</kbd> over it to read</div>
+    <div><kbd>C</kbd> flag this system · <kbd>J</kbd> Jacobian support</div>
     <div><kbd>drag</kbd> orbit · <kbd>scroll</kbd> zoom</div>
   </div>
 
